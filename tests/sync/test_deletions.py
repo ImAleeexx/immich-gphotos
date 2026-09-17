@@ -67,6 +67,22 @@ def test_nothing_to_delete_is_allowed():
     assert deletion_allowed(count=0, synced_total=0, policy=DeletionPolicy())[0] is True
 
 
+def test_zero_synced_total_with_nonzero_count_blocks_rather_than_dividing():
+    """A library that reports zero synced assets is not a library the breaker
+    can measure a fraction against, so it must block rather than allow."""
+    ok, reason = deletion_allowed(count=5, synced_total=0, policy=DeletionPolicy())
+    assert ok is False
+    assert "fraction" in reason
+
+
+def test_reason_names_both_bounds_when_both_are_breached():
+    policy = DeletionPolicy(max_fraction=0.10, max_absolute=5)
+    ok, reason = deletion_allowed(count=600, synced_total=1000, policy=policy)
+    assert ok is False
+    assert "absolute" in reason
+    assert "fraction" in reason
+
+
 def test_disabled_sweeper_plans_nothing(rig):
     assets, gphotos = rig
     sync_asset(assets, "a")

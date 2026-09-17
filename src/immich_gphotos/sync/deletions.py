@@ -14,11 +14,26 @@ def deletion_allowed(count: int, synced_total: int, policy: DeletionPolicy) -> t
     """
     if count == 0:
         return True, None
-    if count > policy.max_absolute:
-        return False, f"absolute limit exceeded: {count} > {policy.max_absolute}"
-    if synced_total and (count / synced_total) > policy.max_fraction:
-        return False, (f"fraction limit exceeded: {count}/{synced_total} > {policy.max_fraction:.0%}")
-    return True, None
+
+    absolute_breach = count > policy.max_absolute
+    # A non-positive synced_total with a non-zero count means there is no
+    # library to measure a fraction against (or the count is nonsensical).
+    # That must block rather than divide, so a caller that ever reports (or
+    # miscomputes) an empty library cannot silently disable this bound.
+    fraction_breach = synced_total <= 0 or (count / synced_total) > policy.max_fraction
+
+    if not absolute_breach and not fraction_breach:
+        return True, None
+
+    reasons = []
+    if absolute_breach:
+        reasons.append(f"absolute limit exceeded: {count} > {policy.max_absolute}")
+    if fraction_breach:
+        if synced_total <= 0:
+            reasons.append(f"fraction limit exceeded: {count} to delete against {synced_total} synced")
+        else:
+            reasons.append(f"fraction limit exceeded: {count}/{synced_total} > {policy.max_fraction:.0%}")
+    return False, "; ".join(reasons)
 
 
 @dataclass(frozen=True)
