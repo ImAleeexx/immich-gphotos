@@ -1,3 +1,4 @@
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,7 +36,15 @@ class ByteResolver:
             if candidate.is_file():
                 return ResolvedBytes(path=candidate, temporary=False)
         self._scratch.mkdir(parents=True, exist_ok=True)
-        dest = self._scratch / f"{asset.immich_id}-{asset.filename}"
+        # The nonce guarantees a fresh path per call: two concurrent resolutions of
+        # the *same* asset (e.g. a slow-but-healthy upload that crosses
+        # requeue_stale_uploading's liveness-free age threshold and gets handed to a
+        # second worker) must never share a scratch file, or one caller's release()
+        # could delete bytes the other is still writing or uploading. Only the
+        # basename of the filename is used: `originalFileName` comes from Immich
+        # unsanitized, and a separator in it must not turn into a subdirectory.
+        nonce = uuid.uuid4().hex
+        dest = self._scratch / f"{asset.immich_id}-{nonce}-{Path(asset.filename).name}"
         self._immich.download_original(asset.immich_id, dest)
         return ResolvedBytes(path=dest, temporary=True)
 

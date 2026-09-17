@@ -71,3 +71,21 @@ def test_release_is_safe_to_call_twice(tmp_path):
     resolved = resolver.resolve(ASSET)
     resolver.release(resolved)
     resolver.release(resolved)
+
+
+def test_concurrent_resolutions_of_the_same_asset_use_different_paths(tmp_path):
+    immich = FakeImmichClient(contents={"a1": b"XYZ"})
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    first = resolver.resolve(ASSET)
+    second = resolver.resolve(ASSET)
+    assert first.path != second.path
+    resolver.release(first)
+    assert second.path.exists()
+
+
+def test_filename_with_path_separator_lands_flat_in_scratch(tmp_path):
+    immich = FakeImmichClient(contents={"a1": b"XYZ"})
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    tricky = replace(ASSET, filename="../../etc/a.jpg")
+    resolved = resolver.resolve(tricky)
+    assert resolved.path.parent == tmp_path / "scratch"
