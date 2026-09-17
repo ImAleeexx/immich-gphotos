@@ -28,7 +28,10 @@ where = ["src"]
 # Jinja2 templates are read at runtime from inside the installed package
 # (api/pages.py resolves them relative to __file__), so without this they are
 # silently absent from the built wheel and every page but /healthz breaks.
-immich_gphotos = ["web/templates/*.html"]
+# web/static has exactly the same property -- api/app.py mounts it relative to
+# __file__ -- and the same failure mode: the wheel builds cleanly and the
+# container serves an unstyled UI.
+immich_gphotos = ["web/templates/*.html", "web/static/*", "web/static/fonts/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

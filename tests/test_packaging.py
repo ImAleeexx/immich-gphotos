@@ -34,3 +34,12 @@ def test_release_workflow_builds_for_both_architectures():
 
 def test_license_is_agpl():
     assert "GNU AFFERO GENERAL PUBLIC LICENSE" in ROOT.joinpath("LICENSE").read_text()
+
+
+def test_static_assets_ship_in_the_wheel():
+    """Same failure mode the templates already hit: these are read at runtime
+    relative to __file__, so without an explicit package-data entry the wheel
+    builds cleanly and the container serves an unstyled UI."""
+    pyproject = ROOT.joinpath("pyproject.toml").read_text()
+    assert '"web/static/*"' in pyproject
+    assert '"web/static/fonts/*"' in pyproject

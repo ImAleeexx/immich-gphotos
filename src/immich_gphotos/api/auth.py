@@ -11,6 +11,14 @@ PASSWORD_KEY = "ui_password"
 SESSION_COOKIE = "igp_session"
 OPEN_PATHS = frozenset({"/hooks/immich", "/healthz", "/metrics", "/login"})
 
+# Served to unauthenticated browsers on purpose: the login page needs its own
+# stylesheet, fonts and icon to render, and `/login` being open while its
+# assets were not is what left that page unstyled. Scoped to this one prefix
+# rather than a general `startswith` rule -- everything under it is a static
+# file with no user data in it, and StaticFiles resolves paths against the
+# mounted directory, so the prefix cannot be walked out of.
+STATIC_PREFIX = "/static/"
+
 _ITERATIONS = 200_000
 
 
@@ -34,7 +42,7 @@ def requires_setup(services) -> bool:
 
 
 def is_open(path: str) -> bool:
-    return path in OPEN_PATHS
+    return path in OPEN_PATHS or path.startswith(STATIC_PREFIX)
 
 
 @router.post("/login")

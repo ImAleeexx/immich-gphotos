@@ -1,12 +1,16 @@
 import hmac
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from immich_gphotos.api import auth, hooks, ops, pages, routes, stream, wizard
 from immich_gphotos.services import Services
+
+STATIC_DIR = Path(__file__).parent.parent / "web" / "static"
 
 
 def create_app(services: Services) -> FastAPI:
@@ -56,6 +60,12 @@ def create_app(services: Services) -> FastAPI:
                 return JSONResponse({"detail": "unauthenticated"}, status_code=401)
             return RedirectResponse("/login", status_code=307)
         return await call_next(request)
+
+    # Resolved relative to __file__ for the same reason api/pages.py resolves
+    # the template directory that way: the package is installed into
+    # site-packages, so a path relative to the working directory does not
+    # survive `pip install .`.
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     app.include_router(hooks.router)
     app.include_router(ops.router)
