@@ -22,6 +22,41 @@ def test_empty_secrets_do_not_blank_the_message():
     assert r.scrub("hello") == "hello"
 
 
+def test_add_secret_is_scrubbed_from_then_on():
+    """The wizard persists a new API key or auth_data well after Redactor is
+    constructed at boot; add_secret is how that credential still gets
+    scrubbed for the rest of the process's life."""
+    r = Redactor(["boot-secret"])
+    assert "boot-secret" not in r.scrub("token=boot-secret")
+    assert "wizard-secret" in r.scrub("token=wizard-secret")
+
+    r.add_secret("wizard-secret")
+
+    assert "wizard-secret" not in r.scrub("token=wizard-secret")
+    assert "boot-secret" not in r.scrub("token=boot-secret")  # unaffected
+
+
+def test_add_secret_ignores_empty_values():
+    r = Redactor([])
+    r.add_secret(None)
+    r.add_secret("")
+    assert r.scrub("hello") == "hello"
+
+
+def test_configure_logging_accepts_a_shared_redactor_instance(capsys):
+    """main.build_services hands the same Redactor to configure_logging and to
+    the stores, so a credential added later (Redactor.add_secret) reaches
+    both without configure_logging building its own separate copy."""
+    shared = Redactor(["hunter3"])
+    configure_logging("INFO", redactor=shared)
+    shared.add_secret("added-later")
+    logging.getLogger("test").info("secrets: hunter3 added-later")
+    line = capsys.readouterr().err.strip().splitlines()[-1]
+    record = json.loads(line)
+    assert "hunter3" not in record["message"]
+    assert "added-later" not in record["message"]
+
+
 def test_configure_logging_emits_json_and_redacts(capsys):
     configure_logging("INFO", secrets=["hunter2"])
     logging.getLogger("test").info("password is hunter2")
