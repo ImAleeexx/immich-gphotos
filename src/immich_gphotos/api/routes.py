@@ -1,8 +1,10 @@
+from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from immich_gphotos.composition import rebuild_runtime
 from immich_gphotos.config import Quality
 from immich_gphotos.services import Services
 from immich_gphotos.sync.backfill import BACKFILL_CURSOR
@@ -68,24 +70,39 @@ def retry(asset_id: str, request: Request) -> dict:
 
 @router.get("/settings")
 def get_settings(request: Request) -> dict:
+    """Report the settings the running service is actually using.
+
+    This used to splat the raw stored row over the live values, so a write
+    that failed to take effect (before the live-swap in `rebuild_runtime`
+    existed) would still be reported back as applied -- dangerously so for
+    `deletions_enabled`, where a user turning deletions *off* would see "off"
+    while a stale in-memory loop kept trashing Google items. `put_settings`
+    now rebuilds the live runtime graph on every write, so `services.settings`
+    is always the truth and nothing needs to be read back from storage here.
+    """
     services: Services = request.app.state.services
-    stored = services.settings_repo.get(SETTING_KEY) or {}
     return {
         "quality": services.settings.quality,
         "albums_enabled": services.settings.albums_enabled,
         "deletions_enabled": services.settings.deletions_enabled,
         "worker_threads": services.settings.worker_threads,
         "bandwidth_bytes_per_second": services.settings.bandwidth_bytes_per_second,
-        **stored,
     }
 
 
 @router.put("/settings")
 def put_settings(patch: SettingsPatch, request: Request) -> dict:
     services: Services = request.app.state.services
+    updates = patch.model_dump(exclude_none=True)
     stored = dict(services.settings_repo.get(SETTING_KEY) or {})
-    stored.update(patch.model_dump(exclude_none=True))
+    stored.update(updates)
     services.settings_repo.set(SETTING_KEY, stored)
+    if updates:
+        # Live swap: rebuild the runtime graph (Runtime, Reconciler, the
+        # DeletionSweeper, ...) against the new Settings and hand it to the
+        # background loop in place, so e.g. deletions_enabled=False stops the
+        # sweeper on its next pass instead of only after a manual restart.
+        rebuild_runtime(services, settings=replace(services.settings, **updates))
     services.events.add("info", "settings updated")
     return stored
 
