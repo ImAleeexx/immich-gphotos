@@ -12,6 +12,7 @@ from immich_gphotos.models import Asset, AssetState, ErrorClass, Outcome, Priori
 from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.store.db import connect
 from immich_gphotos.sync.bytes import ByteResolver
+from immich_gphotos.sync.throttle import TokenBucket
 from immich_gphotos.sync.worker import Worker
 
 ASSET = Asset(
@@ -122,3 +123,84 @@ def test_downloaded_scratch_file_is_removed_even_when_upload_fails(rig):
     worker.process(claim(assets))
     scratch = tmp_path / "scratch"
     assert list(scratch.glob("*")) == []
+
+
+def test_no_bandwidth_cap_configured_adds_no_delay_and_no_bucket(tmp_path):
+    clock = FakeClock()
+    assets = AssetRepo(connect(tmp_path / "t.db"), clock)
+    immich = FakeImmichClient(contents={"a1": b"ABC"})
+    gphotos = FakeGooglePhotosClient()
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    sleeps: list[float] = []
+    worker = Worker(assets, gphotos, resolver, Filters(), RetryPolicy(jitter=0.0), clock, sleep=sleeps.append)
+    assert worker._bandwidth is None  # unset means no bucket is ever constructed
+
+    result = worker.process(claim(assets))
+
+    assert result.state is AssetState.SYNCED
+    assert sleeps == []
+
+
+def test_bandwidth_cap_delays_a_large_upload(tmp_path):
+    """Driven entirely by a FakeClock and a recording sleep -- no real sleep."""
+    clock = FakeClock()
+    assets = AssetRepo(connect(tmp_path / "t.db"), clock)
+    content = b"x" * 1000
+    immich = FakeImmichClient(contents={"a1": content})
+    gphotos = FakeGooglePhotosClient()
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    bucket = TokenBucket(rate_bytes_per_second=100, clock=clock)
+    sleeps: list[float] = []
+    worker = Worker(
+        assets,
+        gphotos,
+        resolver,
+        Filters(),
+        RetryPolicy(jitter=0.0),
+        clock,
+        bandwidth=bucket,
+        sleep=sleeps.append,
+    )
+
+    result = worker.process(claim(assets, replace(ASSET, size_bytes=len(content))))
+
+    assert result.state is AssetState.SYNCED
+    # 1000 bytes at 100 bytes/sec, with a bucket that starts full at capacity
+    # (== the rate): the first 100 bytes are free, the remaining 900 cost
+    # 9.0 seconds -- and the caller (not the bucket) is what waits.
+    assert sleeps == [9.0]
+
+
+def test_bandwidth_cap_shared_across_calls_drains_the_same_bucket(tmp_path):
+    """One bucket instance must be shared across every upload, or a pool of
+    workers would each get their own full-rate allowance -- wrong by a
+    factor of the pool size. Verified here via two sequential uploads
+    against the same Worker/bucket."""
+    clock = FakeClock()
+    assets = AssetRepo(connect(tmp_path / "t.db"), clock)
+    content = b"x" * 60
+    immich = FakeImmichClient(contents={"a1": content, "a2": content})
+    gphotos = FakeGooglePhotosClient()
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    bucket = TokenBucket(rate_bytes_per_second=100, clock=clock)
+    sleeps: list[float] = []
+    worker = Worker(
+        assets,
+        gphotos,
+        resolver,
+        Filters(),
+        RetryPolicy(jitter=0.0),
+        clock,
+        bandwidth=bucket,
+        sleep=sleeps.append,
+    )
+
+    worker.process(claim(assets, replace(ASSET, size_bytes=len(content))))
+    assert sleeps == []  # 60 of 100 tokens spent, still within capacity
+
+    second = replace(ASSET, immich_id="a2", checksum="sum-a2", size_bytes=len(content))
+    worker.process(claim(assets, second))
+    # The second call drains the *same* bucket: 60 + 60 = 120 against a
+    # 100-token capacity that has not had time to refill (FakeClock never
+    # advanced), so it must wait for the 20-token shortfall.
+    assert sleeps == [0.2]

@@ -1,6 +1,9 @@
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 
 from immich_gphotos.clock import Clock
 from immich_gphotos.config import Filters, RetryPolicy
@@ -10,6 +13,7 @@ from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.sync.backoff import next_delay, should_quarantine
 from immich_gphotos.sync.bytes import ByteResolver
 from immich_gphotos.sync.eligibility import check_eligibility
+from immich_gphotos.sync.throttle import TokenBucket
 
 HALT_RETRY_DELAY = timedelta(minutes=10)
 
@@ -45,6 +49,9 @@ class Worker:
         filters: Filters,
         retry: RetryPolicy,
         clock: Clock,
+        *,
+        bandwidth: TokenBucket | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._assets = assets
         self._gphotos = gphotos
@@ -52,6 +59,14 @@ class Worker:
         self._filters = filters
         self._retry = retry
         self._clock = clock
+        # Shared across every worker thread that calls this same Worker
+        # instance's process() -- one bucket, not one per thread, or the cap
+        # would be wrong by a factor of the pool size. None means no cap and
+        # must add no overhead (see _throttle_upload below).
+        self._bandwidth = bandwidth
+        # Injectable so tests can drive the wait with a FakeClock and assert
+        # on it without a real sleep; production uses the real time.sleep.
+        self._sleep = sleep
 
     def process(self, stored: StoredAsset, *, transfer_allowed: bool = True) -> WorkerResult:
         """Process one asset.
@@ -98,6 +113,7 @@ class Worker:
 
             resolved = self._resolver.resolve(asset)
             try:
+                self._throttle_upload(resolved.path)
                 media_key = self._gphotos.upload(
                     resolved.path, checksum=asset.checksum, filename=asset.filename
                 )
@@ -116,6 +132,34 @@ class Worker:
             # so the full exception must be captured here or it is lost forever.
             logger.exception("unexpected error processing asset %s", asset.immich_id)
             return self._handle_failure(stored, ErrorClass.UNKNOWN, str(exc))
+
+    def _throttle_upload(self, path: Path) -> None:
+        """Make the caller wait its share of the configured upload bandwidth cap.
+
+        Only the upload leg is metered, not the download/resolve leg: the cap
+        is documented (and read back from the API) as "cap on upload
+        throughput" -- it protects the outbound link to Google, which is
+        often the metered/constrained one (e.g. a residential or mobile
+        upstream), not the local read from Immich's own volume or API, which
+        is a different link entirely and, in the direct-read fast path, may
+        not even cross the network. Metering it too would throttle local disk
+        reads for no reason the setting claims to cover.
+
+        No bucket configured (`self._bandwidth is None`, i.e. no cap) takes
+        this branch and returns immediately -- no lock, no clock call, no
+        stat() -- so an unconfigured cap adds no overhead.
+        """
+        if self._bandwidth is None:
+            return
+        try:
+            size = path.stat().st_size
+        except OSError:
+            # Can't size the file (already gone, races with release, ...) --
+            # never let metering itself fail the upload.
+            return
+        wait = self._bandwidth.take(size)
+        if wait > 0:
+            self._sleep(wait)
 
     def _handle_failure(self, stored: StoredAsset, error_class: ErrorClass, message: str) -> WorkerResult:
         asset_id = stored.asset.immich_id

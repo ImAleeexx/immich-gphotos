@@ -36,6 +36,7 @@ from immich_gphotos.sync.deletions import DeletionSweeper
 from immich_gphotos.sync.loops import BackgroundLoops
 from immich_gphotos.sync.reconciler import Reconciler
 from immich_gphotos.sync.runtime import Runtime
+from immich_gphotos.sync.throttle import TokenBucket
 from immich_gphotos.sync.worker import Worker
 
 
@@ -54,7 +55,16 @@ def build_runtime_graph(
 ) -> tuple[Runtime, BackfillJob, BackgroundLoops]:
     """Construct one fresh copy of everything that closes over clients/settings."""
     resolver = ByteResolver(immich, scratch=scratch, allow_direct=allow_direct)
-    worker = Worker(assets, gphotos, resolver, settings.filters, settings.retry, clock)
+    # One bucket for the whole graph, shared by every worker thread that
+    # calls this Worker's process() -- a bucket per thread would let the pool
+    # size multiply the configured cap. None (the default, unset) means no
+    # cap and is never constructed, so it adds no overhead.
+    bandwidth = (
+        TokenBucket(settings.bandwidth_bytes_per_second, clock)
+        if settings.bandwidth_bytes_per_second is not None
+        else None
+    )
+    worker = Worker(assets, gphotos, resolver, settings.filters, settings.retry, clock, bandwidth=bandwidth)
     runtime = Runtime(assets, worker, settings, clock, events)
     backfill = BackfillJob(immich, assets, cursors, settings)
     loops = BackgroundLoops(
