@@ -40,7 +40,11 @@ def test_endpoints_we_depend_on_still_exist(spec, path, method):
 @pytest.mark.contract
 def test_metadata_search_fields(spec):
     props = spec["components"]["schemas"]["MetadataSearchDto"]["properties"]
-    for field in ("updatedAfter", "page", "size", "withExif", "withDeleted", "visibility"):
+    # "visibility" is deliberately not asserted here: the client never sends
+    # it, and upstream marked it deprecated as of Immich v3.2.0, so pinning
+    # it would fail this suite the moment Immich drops a field we never
+    # depended on in the first place.
+    for field in ("updatedAfter", "page", "size", "withExif", "withDeleted"):
         assert field in props
 
 
@@ -61,6 +65,27 @@ def test_asset_response_fields_we_read(spec):
         "exifInfo",
     ):
         assert field in props
+
+
+@pytest.mark.contract
+def test_visibility_and_type_values_we_compare_against_are_still_valid(spec):
+    """`test_asset_response_fields_we_read` only proves `visibility` and
+    `type` are still present on the DTO -- it says nothing about the actual
+    strings those fields carry. `sync.eligibility.SYNCABLE_VISIBILITY` and
+    `config.Filters.allowed_types` are string comparisons against Immich's
+    enums, and they gate every asset: if Immich ever re-cases or renames a
+    value we compare against, every asset would silently become
+    `ineligible` -- nothing syncs, no error is raised -- while the two field-
+    presence tests above stayed green. Asserting our constants are a subset
+    of the live enums is what actually catches that."""
+    from immich_gphotos.config import Filters
+    from immich_gphotos.sync.eligibility import SYNCABLE_VISIBILITY
+
+    visibility_values = set(spec["components"]["schemas"]["AssetVisibility"]["enum"])
+    assert visibility_values >= SYNCABLE_VISIBILITY
+
+    type_values = set(spec["components"]["schemas"]["AssetTypeEnum"]["enum"])
+    assert type_values >= Filters().allowed_types
 
 
 @pytest.mark.contract
