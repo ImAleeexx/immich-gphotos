@@ -100,6 +100,15 @@ def rebuild_runtime(
     settings = settings if settings is not None else services.settings
     old_runtime = services.runtime
 
+    # GpmcClient bakes `quality` in at construction and `upload()` reads it
+    # from `self`, not from `Settings` -- so carrying the *existing* gphotos
+    # client forward (the common case: only settings changed) would silently
+    # keep uploading at the old quality forever, no matter what a settings
+    # save or the wizard's options step just set. Sync it here, in the one
+    # place both paths funnel through, rather than in each caller.
+    if hasattr(gphotos, "quality"):
+        gphotos.quality = settings.quality
+
     runtime, backfill, loops = build_runtime_graph(
         immich=immich,
         gphotos=gphotos,

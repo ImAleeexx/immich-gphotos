@@ -13,13 +13,22 @@ from fastapi.testclient import TestClient
 from immich_gphotos.api.app import create_app
 from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
 from immich_gphotos.api.routes import DELETIONS_ENABLE_PHRASE
+from immich_gphotos.gphotos.client import GpmcClient
 from immich_gphotos.main import build_services
+from immich_gphotos.storage_keys import GOOGLE_AUTH_KEY
 
 
-def _rig(tmp_path, initial_settings=None):
+def _rig(tmp_path, initial_settings=None, google_auth_data=None):
     services, loops_handle = build_services(tmp_path, env={})
-    if initial_settings is not None:
-        services.settings_repo.set("settings", initial_settings)
+    if initial_settings is not None or google_auth_data is not None:
+        if initial_settings is not None:
+            services.settings_repo.set("settings", initial_settings)
+        if google_auth_data is not None:
+            # Not a real credential -- GpmcClient only authenticates lazily,
+            # per-thread, the first time a call actually touches gpmc.Client
+            # (see GpmcClient._client); nothing here does that, so this dummy
+            # string is never used as a credential against a real service.
+            services.settings_repo.set(GOOGLE_AUTH_KEY, google_auth_data)
         services, loops_handle = build_services(tmp_path, env={})
     services.settings_repo.set(PASSWORD_KEY, hash_password("test-password"))
     http = TestClient(create_app(services), follow_redirects=False)
@@ -62,16 +71,38 @@ def test_get_settings_reports_the_running_value_not_a_stale_stored_one(tmp_path)
 
 def test_worker_thread_settings_also_flow_through_the_live_swap(tmp_path):
     """Not just deletions_enabled: rebuild_runtime rebuilds the whole graph
-    against the new Settings, so a Worker built afterwards uses the new
-    filters/retry policy too."""
+    against the new Settings, so a Runtime built afterwards uses the new
+    worker_threads too."""
     http, services, loops_handle = _rig(tmp_path)
 
-    response = http.put("/api/settings", json={"worker_threads": 7, "quality": "quota"})
+    response = http.put("/api/settings", json={"worker_threads": 7})
     assert response.status_code == 200
 
     assert services.settings.worker_threads == 7
-    assert services.settings.quality == "quota"
     assert loops_handle.current._runtime._settings.worker_threads == 7
+
+
+def test_changing_quality_actually_changes_what_the_running_uploader_uses(tmp_path):
+    """C1 regression guard: GpmcClient bakes `quality` in at construction and
+    `upload()` reads it from `self`, not from `Settings`. rebuild_runtime used
+    to carry the *existing* gphotos client forward unchanged on a
+    settings-only rebuild, so a quality change was accepted, stored, and
+    reported back by GET /api/settings -- while the live uploader silently
+    kept uploading at the old quality forever. Assert on the client's
+    effective quality, not on services.settings, which is exactly the
+    distinction that let this ship."""
+    http, services, loops_handle = _rig(tmp_path, google_auth_data="not-a-real-credential")
+    assert isinstance(services.gphotos, GpmcClient)
+    assert services.gphotos.quality == "original"
+
+    response = http.put("/api/settings", json={"quality": "quota"})
+
+    assert response.status_code == 200
+    assert response.json()["quality"] == "quota"
+    assert services.settings.quality == "quota"
+    # The effective behaviour: the actual client the running Worker holds.
+    assert services.gphotos.quality == "quota"
+    assert loops_handle.current._runtime._worker._gphotos is services.gphotos
 
 
 # --- Deletion propagation's typed confirmation (spec: "Off by default, ------

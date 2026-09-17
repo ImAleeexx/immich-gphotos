@@ -107,6 +107,23 @@ class GpmcClient:
         self._local = threading.local()
 
     @property
+    def quality(self) -> Quality:
+        return self._quality
+
+    @quality.setter
+    def quality(self, value: Quality) -> None:
+        """Let `composition.rebuild_runtime` update the live quality in place.
+
+        `upload()` reads `self._quality` fresh on every call, so mutating it
+        here takes effect on the very next upload -- no client reconstruction,
+        no thread-local gpmc.Client re-authentication needed. This is what
+        lets a settings change (API PUT or the wizard's options step) actually
+        change what gets uploaded, instead of only updating `Settings` while
+        the client already in use keeps whatever quality it was built with.
+        """
+        self._quality = value
+
+    @property
     def _client(self):  # noqa: ANN202 - gpmc has no public type export
         existing = getattr(self._local, "client", None)
         if existing is None:

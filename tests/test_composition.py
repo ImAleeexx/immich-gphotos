@@ -126,6 +126,25 @@ def test_rebuild_without_a_loops_handle_still_updates_services(tmp_path):
     assert services.settings.quality == "saver"
 
 
+def test_rebuild_syncs_a_changed_quality_onto_the_carried_forward_gphotos_client(tmp_path):
+    """C1: rebuild_runtime carries the *existing* gphotos client forward
+    unchanged when only settings changed. Anything exposing a settable
+    `quality` (GpmcClient in production) must be synced to the new settings'
+    quality, or a quality change has no effect on the live uploader."""
+
+    class _QualityAwareFake(FakeGooglePhotosClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.quality = "original"
+
+    services = build(tmp_path)
+    services.gphotos = _QualityAwareFake()
+
+    rebuild_runtime(services, settings=Settings(quality="quota"))
+
+    assert services.gphotos.quality == "quota"
+
+
 def test_rebuild_closes_the_outgoing_runtimes_worker_pool(tmp_path):
     """A Runtime with worker_threads > 1 may own a lazily-created thread
     pool. Swapping in a new Runtime on a settings change must not leak that

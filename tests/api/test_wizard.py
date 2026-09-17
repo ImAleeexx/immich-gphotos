@@ -231,6 +231,28 @@ def test_options_step_persists_settings_and_can_start_backfill(rig):
     assert services.backfill.is_running() is True
 
 
+def test_options_step_quality_actually_reaches_the_google_client_from_step_2(rig, monkeypatch):
+    """C1's exact repro: the wizard's own primary path is step 2 (Google)
+    constructing a GpmcClient at the settings default ("original"), then step
+    4 (Options) setting the user's chosen quality. rebuild_runtime used to
+    carry the *existing* gphotos client forward unchanged on a settings-only
+    rebuild, so this had no effect on the client actually in use, no matter
+    what GET /api/settings reported."""
+    http, services, _ = rig
+    monkeypatch.setattr("gpmc.Client", _FakeGpmcOk)
+
+    google_response = http.post("/api/wizard/google", json={"google_auth_data": SECRET_AUTH_DATA})
+    assert google_response.status_code == 200
+    assert isinstance(services.gphotos, GpmcClient)
+    assert services.gphotos.quality == "original"
+
+    options_response = http.post("/api/wizard/options", json={"quality": "saver"})
+    assert options_response.status_code == 200
+    assert services.settings.quality == "saver"
+    # The effective behaviour, not just the stored setting.
+    assert services.gphotos.quality == "saver"
+
+
 # --- Cross-cutting -----------------------------------------------------------
 
 
