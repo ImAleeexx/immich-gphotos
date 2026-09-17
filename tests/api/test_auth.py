@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from immich_gphotos.api.app import create_app
-from immich_gphotos.api.auth import PASSWORD_KEY, hash_password, verify_password
+from immich_gphotos.api.auth import PASSWORD_KEY, SESSION_COOKIE, hash_password, verify_password
 from immich_gphotos.clock import FakeClock
 from immich_gphotos.config import Settings
 from immich_gphotos.services import Services
@@ -69,16 +69,48 @@ def test_login_with_the_right_password_grants_access(rig):
 
 def test_login_with_the_wrong_password_is_refused(rig):
     http, services = rig
-    services.settings_repo.set(PASSWORD_KEY, hash_password("hunter2"))
+    original = hash_password("hunter2")
+    services.settings_repo.set(PASSWORD_KEY, original)
     assert http.post("/login", data={"password": "nope"}).status_code == 401
     assert http.get("/api/status").status_code == 401
+    # The authenticated (non-first-run) branch must never touch the stored
+    # hash -- only the first-run branch is allowed to write PASSWORD_KEY.
+    assert services.settings_repo.get(PASSWORD_KEY) == original
 
 
-def test_first_run_sends_you_to_the_wizard_to_set_a_password(rig):
+def test_first_run_login_page_offers_to_set_a_password(rig):
+    """Renamed from `test_first_run_sends_you_to_the_wizard_to_set_a_password`:
+    that name promised a redirect to /wizard which the body never asserted and
+    which the implementation never performs -- GET /login simply renders the
+    first-run copy in place. Fixed the name to match what is actually tested;
+    no such redirect exists in this task's scope.
+    """
     http, _ = rig
     response = http.get("/login")
     assert response.status_code == 200
     assert "set a password" in response.text.lower()
+
+
+def test_logout_invalidates_the_old_session_cookie(rig):
+    """A `/logout` that only deletes the browser cookie leaves the session
+    token in settings_repo untouched, so a *captured* copy of the old cookie
+    (shared machine, browser history, a proxy log) would keep working
+    indefinitely. Proving a fresh, cookie-less client is unauthenticated after
+    logout would pass even with that bug -- this replays the exact old cookie
+    value on a separate client instead.
+    """
+    http, services = rig
+    services.settings_repo.set(PASSWORD_KEY, hash_password("hunter2"))
+    assert http.post("/login", data={"password": "hunter2"}).status_code == 303
+    old_cookie = http.cookies.get(SESSION_COOKIE)
+    assert old_cookie is not None
+    assert http.get("/api/status").status_code == 200
+
+    assert http.post("/logout").status_code == 303
+
+    replay = TestClient(create_app(services), follow_redirects=False)
+    replay.cookies.set(SESSION_COOKIE, old_cookie)
+    assert replay.get("/api/status").status_code == 401
 
 
 def test_first_run_login_sets_the_password_and_grants_access(rig):

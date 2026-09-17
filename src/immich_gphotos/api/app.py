@@ -1,3 +1,5 @@
+import hmac
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, RedirectResponse
 
@@ -15,7 +17,11 @@ def create_app(services: Services) -> FastAPI:
             return await call_next(request)
         expected = services.settings_repo.get(auth.SESSION_COOKIE)
         supplied = request.cookies.get(auth.SESSION_COOKIE)
-        if not expected or supplied != expected:
+        # A missing cookie or missing stored token must fail closed before
+        # ever reaching compare_digest (it requires two real strings); once
+        # both are present, the actual token comparison must be constant-time
+        # — this is the same bearer token gating every authenticated route.
+        if not expected or not supplied or not hmac.compare_digest(supplied, expected):
             if request.url.path.startswith("/api"):
                 return JSONResponse({"detail": "unauthenticated"}, status_code=401)
             return RedirectResponse("/login", status_code=307)

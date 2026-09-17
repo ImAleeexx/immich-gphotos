@@ -59,6 +59,11 @@ def login(request: Request, password: str = Form(...)):
 
 @router.post("/logout")
 def logout(request: Request):
+    services = request.app.state.services
+    # The middleware trusts settings_repo, not the browser, as the source of
+    # truth for whether a session is live: clearing only the cookie would
+    # leave a captured cookie value valid forever.
+    services.settings_repo.set(SESSION_COOKIE, None)
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie(SESSION_COOKIE)
     return response
