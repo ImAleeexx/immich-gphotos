@@ -5,3 +5,5 @@ data/
 .pytest_cache/
 .superpowers/
 *.egg-info/
+.claude/
+docs/superpowers/
