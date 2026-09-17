@@ -117,8 +117,7 @@ class AssetRepo:
     def mark_ineligible(self, immich_id: str, reason: str) -> None:
         with self._conn.lock:
             self._conn.execute(
-                "UPDATE asset SET state = ?, ineligible_reason = ?, claimed_at = NULL"
-                " WHERE immich_id = ?",
+                "UPDATE asset SET state = ?, ineligible_reason = ?, claimed_at = NULL WHERE immich_id = ?",
                 (AssetState.INELIGIBLE.value, reason, immich_id),
             )
 
@@ -148,16 +147,12 @@ class AssetRepo:
 
     def get(self, immich_id: str) -> StoredAsset | None:
         with self._conn.lock:
-            row = self._conn.execute(
-                "SELECT * FROM asset WHERE immich_id = ?", (immich_id,)
-            ).fetchone()
+            row = self._conn.execute("SELECT * FROM asset WHERE immich_id = ?", (immich_id,)).fetchone()
         return _row_to_stored(row) if row else None
 
     def counts_by_state(self) -> dict[str, int]:
         with self._conn.lock:
-            rows = self._conn.execute(
-                "SELECT state, COUNT(*) AS n FROM asset GROUP BY state"
-            ).fetchall()
+            rows = self._conn.execute("SELECT state, COUNT(*) AS n FROM asset GROUP BY state").fetchall()
         return {r["state"]: r["n"] for r in rows}
 
     def media_key_for_checksum(self, checksum: str) -> str | None:

@@ -25,9 +25,7 @@ class LockingConnection(sqlite3.Connection):
 
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(
-        path, check_same_thread=False, isolation_level=None, factory=LockingConnection
-    )
+    conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None, factory=LockingConnection)
     # The database holds the Immich API key and Google auth_data.
     path.chmod(0o600)
     conn.row_factory = sqlite3.Row

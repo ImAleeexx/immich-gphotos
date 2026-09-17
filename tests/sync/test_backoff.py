@@ -20,7 +20,7 @@ def test_jitter_stays_within_bounds():
     policy = RetryPolicy(jitter=0.2)
     low = next_delay(3, policy, rand=lambda: 0.0)
     high = next_delay(3, policy, rand=lambda: 1.0)
-    assert low == timedelta(seconds=96)   # 120 * 0.8
+    assert low == timedelta(seconds=96)  # 120 * 0.8
     assert high == timedelta(seconds=144)  # 120 * 1.2
 
 

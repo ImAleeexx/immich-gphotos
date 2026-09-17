@@ -1,5 +1,4 @@
 import base64
-import binascii
 
 SHA1_BYTES = 20
 

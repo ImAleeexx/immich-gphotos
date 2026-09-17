@@ -3,8 +3,20 @@ from immich_gphotos.models import Asset
 
 RAW_EXTENSIONS = frozenset(
     {
-        ".arw", ".cr2", ".cr3", ".dng", ".nef", ".nrw", ".orf",
-        ".pef", ".raf", ".raw", ".rw2", ".sr2", ".srw", ".x3f",
+        ".arw",
+        ".cr2",
+        ".cr3",
+        ".dng",
+        ".nef",
+        ".nrw",
+        ".orf",
+        ".pef",
+        ".raf",
+        ".raw",
+        ".rw2",
+        ".sr2",
+        ".srw",
+        ".x3f",
     }
 )
 
@@ -28,9 +40,12 @@ def check_eligibility(asset: Asset, filters: Filters) -> str | None:
         return "offline"
     if asset.type not in filters.allowed_types:
         return "type_excluded"
-    if filters.max_size_bytes is not None and asset.size_bytes is not None:
-        if asset.size_bytes > filters.max_size_bytes:
-            return "too_large"
+    if (
+        filters.max_size_bytes is not None
+        and asset.size_bytes is not None
+        and asset.size_bytes > filters.max_size_bytes
+    ):
+        return "too_large"
     if filters.skip_raw:
         _, dot, extension = asset.filename.lower().rpartition(".")
         if dot and f".{extension}" in RAW_EXTENSIONS:

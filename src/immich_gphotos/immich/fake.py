@@ -37,11 +37,16 @@ class FakeImmichClient:
         return set(self.method_keys)
 
     def search_assets(
-        self, *, updated_after: datetime | None, page: int = 1, size: int = 1000,
+        self,
+        *,
+        updated_after: datetime | None,
+        page: int = 1,
+        size: int = 1000,
         with_deleted: bool = False,
     ) -> AssetPage:
-        self.searches.append({"updated_after": updated_after, "page": page,
-                              "size": size, "with_deleted": with_deleted})
+        self.searches.append(
+            {"updated_after": updated_after, "page": page, "size": size, "with_deleted": with_deleted}
+        )
         pool = [a for a in self.assets if with_deleted or not a.is_trashed]
         start = (page - 1) * size
         window = pool[start : start + size]
@@ -54,8 +59,7 @@ class FakeImmichClient:
         dest.write_bytes(self.contents.get(asset_id, b"fake-bytes"))
 
     def list_albums(self) -> list[ImmichAlbum]:
-        return [ImmichAlbum(id=k, name=f"Album {k}", asset_count=len(v))
-                for k, v in self.albums.items()]
+        return [ImmichAlbum(id=k, name=f"Album {k}", asset_count=len(v)) for k, v in self.albums.items()]
 
     def album_asset_ids(self, album_id: str) -> list[str]:
         return list(self.albums.get(album_id, []))

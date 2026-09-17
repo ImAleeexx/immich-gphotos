@@ -47,11 +47,11 @@ class HttpImmichClient:
         except httpx.HTTPError as exc:
             raise ImmichError(f"request to {path} failed: {exc}") from exc
         if response.status_code in (401, 403):
-            raise ImmichAuthError(f"Immich rejected the API key ({response.status_code})",
-                                  response.status_code)
+            raise ImmichAuthError(
+                f"Immich rejected the API key ({response.status_code})", response.status_code
+            )
         if response.status_code >= 400:
-            raise ImmichError(f"{method} {path} returned {response.status_code}",
-                              response.status_code)
+            raise ImmichError(f"{method} {path} returned {response.status_code}", response.status_code)
         return response
 
     def server_version(self) -> tuple[int, int, int]:
@@ -66,7 +66,11 @@ class HttpImmichClient:
         return {m["key"] for m in data if "key" in m}
 
     def search_assets(
-        self, *, updated_after: datetime | None, page: int = 1, size: int = 1000,
+        self,
+        *,
+        updated_after: datetime | None,
+        page: int = 1,
+        size: int = 1000,
         with_deleted: bool = False,
     ) -> AssetPage:
         # withExif is on because the size filter needs fileSizeInByte, which is
@@ -97,8 +101,9 @@ class HttpImmichClient:
                 if response.status_code in (401, 403):
                     raise ImmichAuthError("Immich rejected the API key", response.status_code)
                 if response.status_code >= 400:
-                    raise ImmichError(f"download of {asset_id} returned {response.status_code}",
-                                      response.status_code)
+                    raise ImmichError(
+                        f"download of {asset_id} returned {response.status_code}", response.status_code
+                    )
                 with tmp.open("wb") as handle:
                     for chunk in response.iter_bytes(chunk_size=1024 * 1024):
                         handle.write(chunk)

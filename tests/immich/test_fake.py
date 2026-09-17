@@ -4,9 +4,16 @@ from immich_gphotos.models import Asset
 
 def asset(i: str) -> Asset:
     return Asset(
-        immich_id=i, checksum=f"sum-{i}", filename=f"{i}.jpg", type="IMAGE", size_bytes=10,
-        immich_updated_at="2026-09-17T10:00:00Z", original_path=f"/u/{i}.jpg",
-        visibility="timeline", is_offline=False, is_trashed=False,
+        immich_id=i,
+        checksum=f"sum-{i}",
+        filename=f"{i}.jpg",
+        type="IMAGE",
+        size_bytes=10,
+        immich_updated_at="2026-09-17T10:00:00Z",
+        original_path=f"/u/{i}.jpg",
+        visibility="timeline",
+        is_offline=False,
+        is_trashed=False,
     )
 
 

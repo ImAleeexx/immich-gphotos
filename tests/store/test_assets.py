@@ -87,9 +87,9 @@ def test_concurrent_upsert_same_id_does_not_raise(repo):
 
     # Launch 5 threads trying to upsert the same asset concurrently
     # Some with WEBHOOK priority (higher priority, lower number), some with BACKFILL
-    threads = [
-        threading.Thread(target=upsert_with_priority, args=(Priority.WEBHOOK,)) for _ in range(3)
-    ] + [threading.Thread(target=upsert_with_priority, args=(Priority.BACKFILL,)) for _ in range(2)]
+    threads = [threading.Thread(target=upsert_with_priority, args=(Priority.WEBHOOK,)) for _ in range(3)] + [
+        threading.Thread(target=upsert_with_priority, args=(Priority.BACKFILL,)) for _ in range(2)
+    ]
     for t in threads:
         t.start()
     for t in threads:

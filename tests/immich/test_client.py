@@ -99,7 +99,14 @@ def test_search_sends_updated_after_and_paging():
             200,
             json={
                 "albums": {"items": [], "total": 0, "count": 0, "facets": [], "nextPage": None},
-                "assets": {"items": [], "total": 0, "count": 0, "facets": [], "nextCursor": None, "nextPage": None},
+                "assets": {
+                    "items": [],
+                    "total": 0,
+                    "count": 0,
+                    "facets": [],
+                    "nextCursor": None,
+                    "nextPage": None,
+                },
             },
         )
     )
@@ -118,9 +125,7 @@ def test_401_raises_auth_error():
 
 @respx.mock
 def test_download_original_writes_the_file(tmp_path):
-    respx.get(f"{BASE}/api/assets/a1/original").mock(
-        return_value=httpx.Response(200, content=b"JPEGBYTES")
-    )
+    respx.get(f"{BASE}/api/assets/a1/original").mock(return_value=httpx.Response(200, content=b"JPEGBYTES"))
     dest = tmp_path / "a1.jpg"
     client().download_original("a1", dest)
     assert dest.read_bytes() == b"JPEGBYTES"
@@ -135,9 +140,7 @@ def test_download_original_failure_leaves_no_partial_file_at_dest(tmp_path):
         yield b"PART"
         raise httpx.ReadError("connection dropped mid-body")
 
-    respx.get(f"{BASE}/api/assets/a1/original").mock(
-        return_value=httpx.Response(200, content=bad_stream())
-    )
+    respx.get(f"{BASE}/api/assets/a1/original").mock(return_value=httpx.Response(200, content=bad_stream()))
     dest = tmp_path / "a1.jpg"
     with pytest.raises(ImmichError):
         client().download_original("a1", dest)
@@ -158,9 +161,20 @@ def test_download_original_network_error_raises_immich_error(tmp_path):
 @respx.mock
 def test_create_workflow_posts_the_webhook_step_and_returns_id():
     route = respx.post(f"{BASE}/api/workflows").mock(
-        return_value=httpx.Response(201, json={"id": "wf-1", "name": "n", "trigger": "AssetCreate",
-                                               "steps": [], "enabled": True, "logging": True,
-                                               "description": "", "createdAt": "", "updatedAt": ""})
+        return_value=httpx.Response(
+            201,
+            json={
+                "id": "wf-1",
+                "name": "n",
+                "trigger": "AssetCreate",
+                "steps": [],
+                "enabled": True,
+                "logging": True,
+                "description": "",
+                "createdAt": "",
+                "updatedAt": "",
+            },
+        )
     )
     workflow_id = client().create_workflow(
         name="Back up to Google Photos",
