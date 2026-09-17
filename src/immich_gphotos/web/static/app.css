@@ -640,3 +640,197 @@ textarea:focus {
     transform: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Setup wizard -- step rail, checkmark draw, ADB shell switcher.
+   Appended for the resumable-stepper rewrite; the reduced-motion block above
+   still wins for every animation here, since its rules carry !important and
+   apply regardless of source order.
+--------------------------------------------------------------------------- */
+
+.wizard {
+  display: grid;
+  grid-template-columns: 15rem 1fr;
+  gap: var(--space-6);
+  align-items: start;
+}
+
+.stepper {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+  position: sticky;
+  top: calc(var(--space-6) + var(--space-3));
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+
+.step[aria-current="step"] {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.step__marker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.step[aria-current="step"] .step__marker {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.step.is-done .step__marker {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.step__check {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 0.9rem;
+  height: 0.9rem;
+  stroke-dasharray: 20;
+  stroke-dashoffset: 20;
+  opacity: 0;
+}
+
+.step.is-done .step__check {
+  opacity: 1;
+  animation: draw var(--dur-slow) var(--ease-out) forwards;
+}
+
+.step.is-done .step__num {
+  display: none;
+}
+
+@keyframes draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.step__text {
+  display: grid;
+  gap: 0.15rem;
+  line-height: 1.25;
+}
+
+.step__title {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.step__state {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.wizard__panels {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.panel--done {
+  text-align: center;
+  display: grid;
+  gap: var(--space-4);
+  justify-items: center;
+}
+
+.field__ok {
+  color: var(--ok);
+  font-size: 0.8125rem;
+}
+
+/* ADB instructions: shell switcher, commands and the sample log line */
+.wizard pre {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  overflow-x: auto;
+}
+
+.shell-switch {
+  display: inline-flex;
+  gap: var(--space-1);
+  margin-block: var(--space-2);
+  padding: 2px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.shell-switch [role="tab"] {
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.shell-switch [role="tab"][aria-selected="true"] {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.shell-command {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.shell-command pre {
+  flex: 1;
+  margin: 0;
+}
+
+.sample {
+  color: var(--text-muted);
+}
+
+@media (max-width: 760px) {
+  .wizard {
+    grid-template-columns: 1fr;
+  }
+
+  .stepper {
+    position: static;
+    display: flex;
+    overflow-x: auto;
+    gap: var(--space-2);
+  }
+
+  .step {
+    flex: 0 0 auto;
+  }
+}

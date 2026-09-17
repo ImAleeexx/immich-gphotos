@@ -1,81 +1,196 @@
 {% extends "base.html" %}
 {% set nav_active = "wizard" %}
+{% block page_title %}Setup wizard · immich-gphotos{% endblock %}
 {% block content %}
 <h1>Setup wizard</h1>
 <p>Four steps. Each one proves the thing actually works before it's saved &mdash;
-   nothing here is accepted just because it was typed.</p>
+   nothing here is accepted just because it was typed. Reloading this page picks
+   up wherever it left off.</p>
 
-<section class="card">
-  <h2>1. Immich</h2>
-  <form id="immich-form">
-    <label>Server URL <input name="immich_url" placeholder="http://immich:2283" required></label>
-    <label>API key <input name="immich_api_key" type="password" required></label>
-    <button type="submit">Connect</button>
-  </form>
-  <p id="immich-status"></p>
-</section>
-
-<section class="card">
-  <h2>2. Google Photos</h2>
-  <p><code>auth_data</code> can only be extracted from an Android device &mdash; no
-     daemon can automate this part. The easiest way, no root required:</p>
-  <ol>
-    <li>Install <a href="https://github.com/ReVanced/GmsCore/releases">GmsCore</a> and a
-        <a href="https://github.com/j-hc/revanced-magisk-module/releases">patched Google Photos</a>
-        on the device, and connect it over ADB.</li>
-    <li>On your PC, watch the device log for the auth request:
-      <pre><code>adb logcat | grep "auth%2Fphotos.native"</code></pre>
-      (Windows: <code>adb logcat | FINDSTR "auth%2Fphotos.native"</code>)</li>
-    <li>If GmsCore already has an account signed in, remove it first, then open the
-        patched Google Photos app and sign in.</li>
-    <li>A matching log line appears in the terminal. Copy everything from
-        <code>androidId=</code> to the end of that line &mdash; that whole string is
-        <code>auth_data</code>.</li>
+<div class="wizard">
+  <ol class="stepper">
+    <li class="step" data-step="immich" aria-current="step">
+      <span class="step__marker">
+        <svg class="step__check" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="step__num num">1</span>
+      </span>
+      <span class="step__text">
+        <span class="step__title">Immich</span>
+        <span class="step__state">Not started</span>
+      </span>
+    </li>
+    <li class="step" data-step="google">
+      <span class="step__marker">
+        <svg class="step__check" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="step__num num">2</span>
+      </span>
+      <span class="step__text">
+        <span class="step__title">Google Photos</span>
+        <span class="step__state">Not started</span>
+      </span>
+    </li>
+    <li class="step" data-step="workflow">
+      <span class="step__marker">
+        <svg class="step__check" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="step__num num">3</span>
+      </span>
+      <span class="step__text">
+        <span class="step__title">Workflow</span>
+        <span class="step__state">Not started</span>
+      </span>
+    </li>
+    <li class="step" data-step="options">
+      <span class="step__marker">
+        <svg class="step__check" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="step__num num">4</span>
+      </span>
+      <span class="step__text">
+        <span class="step__title">Options</span>
+        <span class="step__state">Not started</span>
+      </span>
+    </li>
   </ol>
-  <p>Rooted device instead? See
-     <a href="https://github.com/xob0t/gpmc#auth_data-where-do-i-get-mine">gpmc's HTTP Toolkit method</a>.</p>
-  <form id="google-form">
-    <label>auth_data <textarea name="google_auth_data" rows="3" required></textarea></label>
-    <button type="submit">Verify &amp; save</button>
-  </form>
-  <p id="google-status"></p>
-</section>
 
-<section class="card">
-  <h2>3. Workflow</h2>
-  <p id="workflow-mode">Connect Immich first to see which mode is available.</p>
-  <form id="workflow-form">
-    <label>Webhook URL (must be reachable <em>from</em> Immich)
-      <input name="webhook_url" id="webhook_url" required>
-    </label>
-    <button type="submit" id="workflow-submit" disabled>Register workflow</button>
-  </form>
-  <p id="workflow-status"></p>
-</section>
+  <div class="wizard__panels stagger">
+    <section class="panel" data-panel="immich">
+      <h2>1. Immich</h2>
+      <form id="immich-form">
+        <div class="field">
+          <label class="field__label" for="immich_url">Server URL</label>
+          <input class="input" id="immich_url" name="immich_url" placeholder="http://immich:2283" required>
+        </div>
+        <div class="field">
+          <label class="field__label" for="immich_api_key">API key</label>
+          <input class="input" id="immich_api_key" name="immich_api_key" type="password" required>
+        </div>
+        <button type="submit" class="btn btn--primary">Connect</button>
+      </form>
+      <p class="field__error" data-role="error" aria-live="polite"></p>
+      <p class="field__ok" data-role="ok" aria-live="polite"></p>
+    </section>
 
-<section class="card">
-  <h2>4. Options</h2>
-  <form id="options-form">
-    <label>Quality
-      <select name="quality">
-        <option value="original">Original</option>
-        <option value="saver">Storage saver</option>
-        <option value="quota">Quota-friendly</option>
-      </select>
-    </label>
-    <label><input type="checkbox" name="albums_enabled" checked> Sync albums</label>
-    <label><input type="checkbox" name="deletions_enabled"> Propagate deletions</label>
-    <p class="hint">When enabled, deleting an item in Immich moves the matching item in
-      Google Photos to trash, where it stays recoverable for 60 days.</p>
-    <label>Worker threads <input type="number" name="worker_threads" min="1" max="16" value="2"></label>
-    <label>Bandwidth (bytes/sec, blank = unlimited, minimum 65536) <input type="number" name="bandwidth_bytes_per_second" min="65536"></label>
-    <label><input type="checkbox" name="start_backfill" checked> Start backfilling existing assets now</label>
-    <button type="submit">Save &amp; finish</button>
-  </form>
-  <p id="options-status"></p>
-</section>
+    <section class="panel" data-panel="google" hidden>
+      <h2>2. Google Photos</h2>
+      <p><code>auth_data</code> can only be extracted from an Android device &mdash; no
+         daemon can automate this part. The easiest way, no root required:</p>
+      <ol>
+        <li>Install <a href="https://github.com/ReVanced/GmsCore/releases">GmsCore</a> and a
+            <a href="https://github.com/j-hc/revanced-magisk-module/releases">patched Google Photos</a>
+            on the device, and connect it over ADB.</li>
+        <li>
+          On your PC, watch the device log for the auth request:
+          <div class="shell-switch" role="tablist" aria-label="Shell">
+            <button type="button" role="tab" aria-selected="true" data-shell="posix">macOS/Linux</button>
+            <button type="button" role="tab" aria-selected="false" data-shell="windows">Windows</button>
+          </div>
+          <div class="shell-command" data-shell-pre="posix">
+            <pre><code>adb logcat | grep "auth%2Fphotos.native"</code></pre>
+            <button type="button" class="btn btn--ghost btn--copy" aria-label="Copy"
+                    data-copy-text="adb logcat | grep &quot;auth%2Fphotos.native&quot;">Copy</button>
+          </div>
+          <div class="shell-command" data-shell-pre="windows" hidden>
+            <pre><code>adb logcat | FINDSTR "auth%2Fphotos.native"</code></pre>
+            <button type="button" class="btn btn--ghost btn--copy" aria-label="Copy"
+                    data-copy-text="adb logcat | FINDSTR &quot;auth%2Fphotos.native&quot;">Copy</button>
+          </div>
+        </li>
+        <li>If GmsCore already has an account signed in, remove it first, then open the
+            patched Google Photos app and sign in.</li>
+        <li>
+          A matching log line appears in the terminal, looking something like:
+          <pre class="sample"><code>...service=oauth2:https://www.googleapis.com/auth/photos.native&amp;androidId=3a1f&hellip;</code></pre>
+          Copy everything from <code>androidId=</code> to the end of that line &mdash; that whole
+          string is <code>auth_data</code>.
+        </li>
+      </ol>
+      <p>Rooted device instead? See
+         <a href="https://github.com/xob0t/gpmc#auth_data-where-do-i-get-mine">gpmc's HTTP Toolkit method</a>.</p>
+      <form id="google-form">
+        <div class="field">
+          <label class="field__label" for="google_auth_data">auth_data</label>
+          <textarea class="input" id="google_auth_data" name="google_auth_data" rows="3" required></textarea>
+        </div>
+        <button type="submit" class="btn btn--primary">Verify and save</button>
+      </form>
+      <p class="field__error" data-role="error" aria-live="polite"></p>
+      <p class="field__ok" data-role="ok" aria-live="polite"></p>
+    </section>
+
+    <section class="panel" data-panel="workflow" hidden>
+      <h2>3. Workflow</h2>
+      <p id="workflow-mode">Connect Immich first to see which mode is available.</p>
+      <form id="workflow-form">
+        <div class="field">
+          <label class="field__label" for="webhook_url">Webhook URL (must be reachable <em>from</em> Immich)</label>
+          <input class="input" id="webhook_url" name="webhook_url" required>
+        </div>
+        <button type="submit" class="btn btn--primary" id="workflow-submit" disabled>Register workflow</button>
+        <button type="button" class="btn btn--ghost" id="workflow-skip">Continue to options</button>
+      </form>
+      <p class="field__error" data-role="error" aria-live="polite"></p>
+      <p class="field__ok" data-role="ok" aria-live="polite"></p>
+    </section>
+
+    <section class="panel" data-panel="options" hidden>
+      <h2>4. Options</h2>
+      <form id="options-form">
+        <div class="field">
+          <label class="field__label" for="quality">Quality</label>
+          <select class="input" id="quality" name="quality">
+            <option value="original">Original</option>
+            <option value="saver">Storage saver</option>
+            <option value="quota">Quota-friendly</option>
+          </select>
+        </div>
+        <label><input type="checkbox" name="albums_enabled" checked> Sync albums</label>
+        <label><input type="checkbox" name="deletions_enabled"> Propagate deletions</label>
+        <p class="field__hint">When enabled, deleting an item in Immich moves the matching item in
+          Google Photos to trash, where it stays recoverable for 60 days.</p>
+        <div class="field">
+          <label class="field__label" for="worker_threads">Worker threads</label>
+          <input class="input" id="worker_threads" type="number" name="worker_threads" max="16" value="2">
+        </div>
+        <div class="field">
+          <label class="field__label" for="bandwidth_bytes_per_second">
+            Bandwidth (bytes/sec, blank = unlimited, minimum 65536)
+          </label>
+          <input class="input" id="bandwidth_bytes_per_second" type="number"
+                 name="bandwidth_bytes_per_second" min="65536" inputmode="numeric">
+        </div>
+        <label><input type="checkbox" name="start_backfill" checked> Start backfilling existing assets now</label>
+        <button type="submit" class="btn btn--primary">Save and finish</button>
+      </form>
+      <p class="field__error" data-role="error" aria-live="polite"></p>
+      <p class="field__ok" data-role="ok" aria-live="polite"></p>
+    </section>
+
+    <section class="panel panel--done" data-panel="done" hidden>
+      <h2>Setup complete</h2>
+      <p id="done-summary">Everything needed to mirror the library is configured.</p>
+      <a class="btn btn--primary" href="/">Go to the dashboard</a>
+    </section>
+  </div>
+</div>
 
 <script>
+document.addEventListener("DOMContentLoaded", () => {
+  "use strict";
+
+  const STEP_ORDER = ["immich", "google", "workflow", "options"];
+  const wizardState = { immichUrl: "", mode: null, workflowId: null };
+
   async function submitJson(url, body) {
     const response = await fetch(url, {
       method: "POST",
@@ -94,11 +209,69 @@
     return data;
   }
 
-  function report(id, text, ok) {
-    const el = document.getElementById(id);
-    el.textContent = text;
-    el.style.color = ok ? "#3fb950" : "#f85149";
+  function stepFor(step) {
+    return document.querySelector('.step[data-step="' + step + '"]');
   }
+
+  function fieldMessage(step, role) {
+    return document.querySelector('.panel[data-panel="' + step + '"] [data-role="' + role + '"]');
+  }
+
+  function showError(step, message) {
+    const errorEl = fieldMessage(step, "error");
+    const okEl = fieldMessage(step, "ok");
+    if (okEl) okEl.textContent = "";
+    if (errorEl) errorEl.textContent = message;
+  }
+
+  function showOk(step, message) {
+    const errorEl = fieldMessage(step, "error");
+    const okEl = fieldMessage(step, "ok");
+    if (errorEl) errorEl.textContent = "";
+    if (okEl) okEl.textContent = message;
+  }
+
+  function markDone(step, stateText) {
+    const li = stepFor(step);
+    if (!li) return;
+    li.classList.add("is-done");
+    const state = li.querySelector(".step__state");
+    if (state) state.textContent = stateText || "Done";
+  }
+
+  function showPanel(step) {
+    document.querySelectorAll(".panel[data-panel]").forEach((panel) => {
+      panel.hidden = panel.dataset.panel !== step;
+    });
+    document.querySelectorAll(".step").forEach((li) => {
+      if (li.dataset.step === step) {
+        li.setAttribute("aria-current", "step");
+      } else {
+        li.removeAttribute("aria-current");
+      }
+    });
+  }
+
+  function firstNotDone() {
+    for (const step of STEP_ORDER) {
+      const li = stepFor(step);
+      if (li && !li.classList.contains("is-done")) return step;
+    }
+    return "options";
+  }
+
+  // Rail entries double as a manual jump -- useful once earlier steps are
+  // done and someone wants to re-check what was entered.
+  document.querySelectorAll(".step").forEach((li) => {
+    li.setAttribute("tabindex", "0");
+    li.addEventListener("click", () => showPanel(li.dataset.step));
+    li.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        showPanel(li.dataset.step);
+      }
+    });
+  });
 
   document.getElementById("webhook_url").value = location.origin + "/hooks/immich";
 
@@ -110,15 +283,19 @@
         immich_url: form.immich_url.value,
         immich_api_key: form.immich_api_key.value,
       });
-      report("immich-status", result.message, true);
+      showOk("immich", result.message);
+      markDone("immich", "Connected");
+      wizardState.immichUrl = form.immich_url.value;
+      wizardState.mode = result.mode;
       const eventDriven = result.mode === "event_driven";
       document.getElementById("workflow-mode").textContent = eventDriven
         ? "Event-driven mode is available for this server."
         : "This server runs in reconciler-only mode (pre-3.0, or no webhook plugin); the reconciler covers it, no workflow needed.";
       document.getElementById("workflow-submit").disabled = !eventDriven;
       form.immich_api_key.value = "";
+      showPanel("google");
     } catch (err) {
-      report("immich-status", err.message, false);
+      showError("immich", err.message);
     }
   });
 
@@ -127,10 +304,12 @@
     const form = event.target;
     try {
       const result = await submitJson("/api/wizard/google", { google_auth_data: form.google_auth_data.value });
-      report("google-status", result.message, true);
+      showOk("google", result.message);
+      markDone("google", "Connected");
       form.google_auth_data.value = "";
+      showPanel("workflow");
     } catch (err) {
-      report("google-status", err.message, false);
+      showError("google", err.message);
     }
   });
 
@@ -138,11 +317,36 @@
     event.preventDefault();
     try {
       const result = await submitJson("/api/wizard/workflow", { webhook_url: event.target.webhook_url.value });
-      report("workflow-status", "Workflow registered (id " + result.workflow_id + ").", true);
+      wizardState.workflowId = result.workflow_id;
+      showOk("workflow", "Workflow registered (id " + result.workflow_id + ").");
+      markDone("workflow", "Registered (id " + result.workflow_id + ")");
+      showPanel("options");
     } catch (err) {
-      report("workflow-status", err.message, false);
+      showError("workflow", err.message);
     }
   });
+
+  document.getElementById("workflow-skip").addEventListener("click", () => {
+    showPanel("options");
+  });
+
+  function renderDoneSummary(result) {
+    const summary = document.getElementById("done-summary");
+    if (!summary) return;
+    const parts = [
+      wizardState.immichUrl ? "Immich connected at " + wizardState.immichUrl + "." : "Immich connected.",
+      "Google Photos connected.",
+    ];
+    if (wizardState.workflowId) {
+      parts.push("Workflow registered (id " + wizardState.workflowId + ").");
+    } else if (wizardState.mode === "event_driven") {
+      parts.push("Workflow not registered yet -- register it from this page for live updates.");
+    } else {
+      parts.push("Running in reconciler-only mode; no workflow needed.");
+    }
+    parts.push(result.backfill_started ? "Backfill started." : "Backfill not started.");
+    summary.textContent = parts.join(" ");
+  }
 
   // Must match immich_gphotos.api.routes.DELETIONS_ENABLE_PHRASE exactly --
   // the server rejects anything else when turning deletions on. The wizard
@@ -164,43 +368,93 @@
       start_backfill: form.start_backfill.checked,
     };
     if (form.deletions_enabled.checked) {
-      const typed = window.prompt(
-        "Enabling deletion propagation: deleting an item in Immich will move the " +
-          "matching item in Google Photos to trash, where it stays recoverable for " +
-          "60 days.\n\n" +
-          `Type "${DELETIONS_ENABLE_PHRASE}" to confirm:`,
-      );
-      if (typed !== DELETIONS_ENABLE_PHRASE) {
+      const ok = await igp.confirmPhrase({
+        title: "Enable deletion propagation",
+        body:
+          "Deleting an item in Immich will move the matching item in Google Photos " +
+          "to trash, where it stays recoverable for 60 days.",
+        phrase: DELETIONS_ENABLE_PHRASE,
+      });
+      if (!ok) {
         form.deletions_enabled.checked = false;
-        report("options-status", "Deletion propagation left off (confirmation not given).", false);
+        showError("options", "Deletion propagation left off. Confirmation was not given.");
         return;
       }
-      body.confirm_deletions = typed;
+      body.confirm_deletions = DELETIONS_ENABLE_PHRASE;
     }
     try {
       const result = await submitJson("/api/wizard/options", body);
-      report("options-status", result.backfill_started ? "Saved. Backfill started." : "Saved.", true);
+      showOk("options", result.backfill_started ? "Saved. Backfill started." : "Saved.");
+      markDone("options", "Saved");
+      renderDoneSummary(result);
+      showPanel("done");
     } catch (err) {
-      report("options-status", err.message, false);
+      showError("options", err.message);
     }
+  });
+
+  // ADB shell switcher -- macOS/Linux (grep) vs Windows (FINDSTR), persisted
+  // per browser so the operator is not re-asked on every visit.
+  (function initShellSwitcher() {
+    const tabs = document.querySelectorAll('.shell-switch [role="tab"]');
+    const blocks = document.querySelectorAll("[data-shell-pre]");
+
+    function setShell(shell) {
+      tabs.forEach((tab) => tab.setAttribute("aria-selected", String(tab.dataset.shell === shell)));
+      blocks.forEach((block) => {
+        block.hidden = block.dataset.shellPre !== shell;
+      });
+      try {
+        localStorage.setItem("igp.shell", shell);
+      } catch (err) {
+        /* private browsing or a blocked store -- the switcher still works this visit */
+      }
+    }
+
+    tabs.forEach((tab) => tab.addEventListener("click", () => setShell(tab.dataset.shell)));
+
+    let initial = "posix";
+    try {
+      const stored = localStorage.getItem("igp.shell");
+      if (stored === "posix" || stored === "windows") initial = stored;
+    } catch (err) {
+      /* fall back to the default */
+    }
+    setShell(initial);
+  })();
+
+  document.querySelectorAll(".btn--copy[data-copy-text]").forEach((button) => {
+    igp.copyButton(button, button.dataset.copyText);
   });
 
   (async () => {
     try {
       const status = await (await fetch("/api/wizard/status")).json();
-      if (status.immich_url) document.getElementById("immich-form").immich_url.value = status.immich_url;
+      if (status.immich_url) {
+        document.getElementById("immich_url").value = status.immich_url;
+        wizardState.immichUrl = status.immich_url;
+      }
       if (status.mode) {
+        wizardState.mode = status.mode;
         const eventDriven = status.mode === "event_driven";
         document.getElementById("workflow-mode").textContent = eventDriven
           ? "Event-driven mode is available for this server."
           : "This server runs in reconciler-only mode; the reconciler covers it, no workflow needed.";
         document.getElementById("workflow-submit").disabled = !eventDriven;
       }
-      if (status.workflow_id) report("workflow-status", "Already registered (id " + status.workflow_id + ").", true);
-      if (status.google_configured) report("google-status", "Already connected.", true);
+      if (status.immich_configured) markDone("immich", "Connected");
+      if (status.google_configured) markDone("google", "Connected");
+      if (status.workflow_id) {
+        wizardState.workflowId = status.workflow_id;
+        markDone("workflow", "Registered (id " + status.workflow_id + ")");
+      } else if (status.mode && status.mode !== "event_driven") {
+        markDone("workflow", "Not needed");
+      }
+      showPanel(firstNotDone());
     } catch (err) {
       /* status is a convenience prefill; a failure here must not block the forms */
     }
   })();
+});
 </script>
 {% endblock %}
