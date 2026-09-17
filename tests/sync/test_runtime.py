@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 
 import pytest
 
@@ -104,10 +104,16 @@ def test_an_auth_failure_pauses_the_runtime(rig):
 
 
 def test_a_pool_size_of_one_never_creates_a_thread_pool(rig):
+    """A single claimed asset would make `len(wave) <= 1` short-circuit to
+    the sequential path regardless of worker_threads, passing even at
+    worker_threads=16 -- enqueue more than one so this actually exercises
+    worker_threads=1 collapsing every wave to size 1."""
     assets, events, gphotos, worker, clock, immich = rig
     assets.upsert_pending(asset("a"), Priority.WEBHOOK)
+    assets.upsert_pending(asset("b"), Priority.WEBHOOK)
     runtime = Runtime(assets, worker, Settings(worker_threads=1), clock, events, immich=immich)
-    runtime.tick(limit=5)
+    result = runtime.tick(limit=5)
+    assert result.processed == 2
     assert runtime._pool is None
 
 
@@ -122,6 +128,11 @@ def test_pool_halts_the_batch_without_starting_undispatched_waves(rig):
     gphotos.fail_on["sum-a"] = GPhotosError("401", ErrorClass.AUTH_INVALID)
     for name in ("a", "b", "c", "d"):
         assets.upsert_pending(asset(name), Priority.WEBHOOK)
+        # FakeClock never advances on its own, so without this every row
+        # gets the same first_seen_at and "ORDER BY priority, first_seen_at"
+        # ties -- the wave [a, b] this test depends on would then rest on
+        # SQLite's unspecified tie-break instead of being deterministic.
+        clock.advance(timedelta(seconds=1))
 
     runtime = Runtime(assets, worker, Settings(worker_threads=2), clock, events, immich=immich)
     result = runtime.tick(limit=4)
