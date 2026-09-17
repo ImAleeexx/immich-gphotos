@@ -7,7 +7,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from immich_gphotos.api import auth, hooks, ops, pages, routes, stream, wizard
+from immich_gphotos.api import auth, hooks, ops, pages, readiness, routes, stream, wizard
 from immich_gphotos.services import Services
 
 STATIC_DIR = Path(__file__).parent.parent / "web" / "static"
@@ -71,6 +71,7 @@ def create_app(services: Services) -> FastAPI:
     app.include_router(ops.router)
     app.include_router(auth.router)
     app.include_router(routes.router)
+    app.include_router(readiness.router)
     app.include_router(wizard.router)
     app.include_router(stream.router)
     app.include_router(pages.router)

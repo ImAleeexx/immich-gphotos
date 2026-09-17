@@ -116,6 +116,11 @@ def status_snapshot(services: Services) -> dict[str, Any]:
         # (see `ByteResolver.resolve`), which this does not attempt to
         # predict.
         "direct_reads_enabled": services.allow_direct,
+        # The dashboard's activity feed. It used to append a client-side row
+        # reading "status refreshed" on every frame -- a heartbeat dressed as
+        # history. These are the real events, already redacted on write by
+        # the shared Redactor.
+        "events": services.events.recent(8),
     }
 
 

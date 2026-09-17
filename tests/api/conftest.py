@@ -42,6 +42,20 @@ def rig_services(tmp_path):
 
 
 @pytest.fixture
+def configured_services(rig_services):
+    """A services graph that has been through the wizard: real credentials
+    stored and real (non-fake) clients swapped in."""
+    from immich_gphotos.storage_keys import GOOGLE_AUTH_KEY, IMMICH_KEY_KEY, IMMICH_URL_KEY
+
+    rig_services.settings_repo.set(IMMICH_URL_KEY, "http://immich:2283")
+    rig_services.settings_repo.set(IMMICH_KEY_KEY, "immich-key")
+    rig_services.settings_repo.set(GOOGLE_AUTH_KEY, "auth-data")
+    rig_services.immich = object()  # stands for any non-Fake client
+    rig_services.gphotos = object()
+    return rig_services
+
+
+@pytest.fixture
 def asset_factory():
     def make(i: str) -> Asset:
         return Asset(
