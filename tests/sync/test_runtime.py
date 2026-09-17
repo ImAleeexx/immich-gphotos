@@ -7,7 +7,7 @@ from immich_gphotos.config import Filters, RetryPolicy, Settings, Window
 from immich_gphotos.gphotos.fake import FakeGooglePhotosClient
 from immich_gphotos.gphotos.protocol import GPhotosError
 from immich_gphotos.immich.fake import FakeImmichClient
-from immich_gphotos.models import Asset, ErrorClass, Priority
+from immich_gphotos.models import Asset, AssetState, ErrorClass, Priority
 from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.store.db import connect
 from immich_gphotos.store.events import EventRepo
@@ -74,6 +74,13 @@ def test_an_auth_failure_pauses_the_runtime(rig):
     assert result.halted is True
     assert runtime.paused_reason is not None
     assert gphotos.uploads == []  # "b" was not attempted after the halt
+
+    # "b" was claimed (flipped to UPLOADING) behind the halted "a" but never
+    # handed to the worker. It must be back in PENDING with no attempt
+    # counted against it, not stranded in UPLOADING until a restart.
+    stranded = assets.get("b")
+    assert stranded.state == AssetState.PENDING
+    assert stranded.attempts == 0
 
 
 def test_a_paused_runtime_does_no_work_until_resumed(rig):
