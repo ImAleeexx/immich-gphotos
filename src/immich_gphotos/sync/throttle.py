@@ -25,7 +25,16 @@ class TokenBucket:
     so tests stay instant and the caller decides how to wait."""
 
     def __init__(self, rate_bytes_per_second: int, clock: Clock) -> None:
-        self._rate = max(1, rate_bytes_per_second)
+        if rate_bytes_per_second <= 0:
+            # Silently clamping a nonsensical rate (e.g. 0, which a
+            # hand-edited settings row could still contain) to the most
+            # extreme possible throttle is the wrong failure direction --
+            # that clamp is exactly what turned a single 5 MB upload into a
+            # ~58-day wedge of the background loop. Reject instead: the only
+            # legitimate way to mean "unlimited" is not constructing a
+            # TokenBucket at all (see composition.build_runtime_graph).
+            raise ValueError(f"rate_bytes_per_second must be positive, got {rate_bytes_per_second}")
+        self._rate = rate_bytes_per_second
         self._clock = clock
         self._tokens = float(self._rate)
         self._updated = clock.now()

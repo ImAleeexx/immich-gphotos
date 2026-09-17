@@ -91,6 +91,18 @@ def test_malformed_persisted_settings_do_not_crash_build_services(tmp_path):
     assert services.settings.albums_enabled is True
 
 
+def test_a_hand_edited_zero_bandwidth_cap_is_ignored_not_applied(tmp_path):
+    """C2: 0 must never reach TokenBucket, including via a stored settings
+    row the API itself would now reject (ge=1). Falls back to the dataclass
+    default (None, unlimited) exactly like any other out-of-bounds value."""
+    conn = connect(tmp_path / "immich-gphotos.db")
+    SettingRepo(conn).set(SETTING_KEY, {"bandwidth_bytes_per_second": 0})
+
+    services, _ = build_services(tmp_path, env={})
+
+    assert services.settings.bandwidth_bytes_per_second is None
+
+
 def test_worker_threads_out_of_the_apis_bounds_is_rejected(tmp_path):
     """The API's SettingsPatch bounds worker_threads to [1, 16]
     (MIN_WORKER_THREADS/MAX_WORKER_THREADS in api.routes). A hand-edited

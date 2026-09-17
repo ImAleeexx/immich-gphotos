@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import get_args
 
 from immich_gphotos.api.app import create_app
-from immich_gphotos.api.routes import MAX_WORKER_THREADS, MIN_WORKER_THREADS, SETTING_KEY
+from immich_gphotos.api.routes import (
+    MAX_WORKER_THREADS,
+    MIN_BANDWIDTH_BYTES_PER_SECOND,
+    MIN_WORKER_THREADS,
+    SETTING_KEY,
+)
 from immich_gphotos.clock import SystemClock
 from immich_gphotos.composition import build_runtime_graph
 from immich_gphotos.config import Quality, Settings
@@ -67,7 +72,11 @@ def _merged_settings(immich_url: str, stored: object) -> Settings:
             overrides["worker_threads"] = worker_threads
 
         bandwidth = stored.get("bandwidth_bytes_per_second")
-        if isinstance(bandwidth, int) and not isinstance(bandwidth, bool) and bandwidth >= 0:
+        if (
+            isinstance(bandwidth, int)
+            and not isinstance(bandwidth, bool)
+            and bandwidth >= MIN_BANDWIDTH_BYTES_PER_SECOND
+        ):
             overrides["bandwidth_bytes_per_second"] = bandwidth
 
     return replace(Settings(immich_url=immich_url), **overrides)

@@ -20,6 +20,14 @@ SETTING_KEY = "settings"
 MIN_WORKER_THREADS = 1
 MAX_WORKER_THREADS = 16
 
+# 0 passes `ge=0` and looks like a reasonable way to type "no cap" (the UI's
+# own "blank = unlimited" hint invites exactly that), but TokenBucket must
+# reject or ignore a non-positive rate rather than run with one -- so it can
+# never be a valid *cap* in the first place. blank/omitted (None) is still
+# how "unlimited" is actually spelled; also shared with
+# main._merged_settings, for the same reason MIN_WORKER_THREADS is.
+MIN_BANDWIDTH_BYTES_PER_SECOND = 1
+
 # Spec: deletion propagation is "off by default, behind an explicit toggle
 # with typed confirmation" -- this is the only setting in the project that
 # can destroy a user's data. The exact phrase the caller must echo back to
@@ -33,7 +41,7 @@ class SettingsPatch(BaseModel):
     deletions_enabled: bool | None = None
     confirm_deletions: str | None = None
     worker_threads: int | None = Field(default=None, ge=MIN_WORKER_THREADS, le=MAX_WORKER_THREADS)
-    bandwidth_bytes_per_second: int | None = Field(default=None, ge=0)
+    bandwidth_bytes_per_second: int | None = Field(default=None, ge=MIN_BANDWIDTH_BYTES_PER_SECOND)
 
 
 def require_deletion_confirmation(patch: SettingsPatch, *, currently_enabled: bool) -> None:

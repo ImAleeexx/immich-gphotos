@@ -13,7 +13,7 @@ from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.store.db import connect
 from immich_gphotos.sync.bytes import ByteResolver
 from immich_gphotos.sync.throttle import TokenBucket
-from immich_gphotos.sync.worker import Worker
+from immich_gphotos.sync.worker import MAX_THROTTLE_WAIT_SECONDS, Worker
 
 ASSET = Asset(
     immich_id="a1",
@@ -204,3 +204,36 @@ def test_bandwidth_cap_shared_across_calls_drains_the_same_bucket(tmp_path):
     # 100-token capacity that has not had time to refill (FakeClock never
     # advanced), so it must wait for the 20-token shortfall.
     assert sleeps == [0.2]
+
+
+def test_a_large_upload_under_a_tiny_cap_cannot_produce_an_unbounded_sleep(tmp_path):
+    """C2: a validly low (but nonzero, e.g. after 0 is rejected at the API)
+    bandwidth cap must still never be able to wedge the single
+    background-loop thread. Uncapped, 5,000,000 bytes at 1 byte/second would
+    ask time.sleep for ~58 days; _throttle_upload must bound that regardless
+    of what TokenBucket.take returns."""
+    clock = FakeClock()
+    assets = AssetRepo(connect(tmp_path / "t.db"), clock)
+    content = b"x" * 5_000_000
+    immich = FakeImmichClient(contents={"a1": content})
+    gphotos = FakeGooglePhotosClient()
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    bucket = TokenBucket(rate_bytes_per_second=1, clock=clock)
+    assert bucket.take(len(content)) > 1_000_000  # the raw, uncapped wait is enormous
+    bucket = TokenBucket(rate_bytes_per_second=1, clock=clock)  # fresh, undrained bucket
+    sleeps: list[float] = []
+    worker = Worker(
+        assets,
+        gphotos,
+        resolver,
+        Filters(),
+        RetryPolicy(jitter=0.0),
+        clock,
+        bandwidth=bucket,
+        sleep=sleeps.append,
+    )
+
+    result = worker.process(claim(assets, replace(ASSET, size_bytes=len(content))))
+
+    assert result.state is AssetState.SYNCED
+    assert sleeps == [MAX_THROTTLE_WAIT_SECONDS]

@@ -105,6 +105,35 @@ def test_changing_quality_actually_changes_what_the_running_uploader_uses(tmp_pa
     assert loops_handle.current._runtime._worker._gphotos is services.gphotos
 
 
+def test_settings_page_no_longer_invites_zero_as_a_bandwidth_cap(tmp_path):
+    """C2: `min="0"` on this field, next to the "blank = unlimited" hint, is
+    exactly what invited "0 means unlimited" -- but 0 passes the (old) API
+    validation and wedges the background loop for ~58 days on a single 5 MB
+    upload (TokenBucket used to clamp it to 1 byte/second). The field must no
+    longer offer 0."""
+    http, _, _ = _rig(tmp_path)
+
+    settings_page = http.get("/settings")
+    wizard_page = http.get("/wizard")
+
+    assert 'name="bandwidth_bytes_per_second" min="1"' in settings_page.text
+    assert 'name="bandwidth_bytes_per_second" min="1"' in wizard_page.text
+    assert 'name="bandwidth_bytes_per_second" min="0"' not in settings_page.text
+    assert 'name="bandwidth_bytes_per_second" min="0"' not in wizard_page.text
+
+
+def test_zero_bandwidth_cap_is_rejected_by_the_api(tmp_path):
+    """0 must never reach TokenBucket -- see sync.throttle.TokenBucket, which
+    now rejects a non-positive rate outright rather than clamping it to the
+    most extreme possible throttle."""
+    http, services, _ = _rig(tmp_path)
+
+    response = http.put("/api/settings", json={"bandwidth_bytes_per_second": 0})
+
+    assert response.status_code == 422
+    assert services.settings.bandwidth_bytes_per_second is None
+
+
 # --- Deletion propagation's typed confirmation (spec: "Off by default, ------
 # behind an explicit toggle with typed confirmation") -----------------------
 

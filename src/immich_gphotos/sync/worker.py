@@ -24,6 +24,19 @@ HALT_RETRY_DELAY = timedelta(minutes=10)
 # window reopens or is widened.
 WINDOW_RETRY_DELAY = timedelta(minutes=15)
 
+# Bounds any single throttle wait `_throttle_upload` hands to `sleep`,
+# regardless of the configured bandwidth cap. `time.sleep` is uninterruptible
+# and runs on the single background-loop thread (see Runtime.tick), so an
+# unbounded wait -- even from a validly low but nonzero
+# bandwidth_bytes_per_second -- would stall the reconciler, backfill, album
+# mirror and deletion sweep for as long as the cap and file size dictate. A
+# wedged loop must not be reachable from any setting value, so this is
+# enforced here rather than only at the API boundary. 30s is well under
+# every other timer in this module (WINDOW_RETRY_DELAY, HALT_RETRY_DELAY)
+# and IDLE_SLEEP_SECONDS, so a pathologically low cap slows one upload
+# rather than stopping the world.
+MAX_THROTTLE_WAIT_SECONDS = 30.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -170,7 +183,13 @@ class Worker:
             return
         wait = self._bandwidth.take(size)
         if wait > 0:
-            self._sleep(wait)
+            # Cap regardless of configuration -- see MAX_THROTTLE_WAIT_SECONDS.
+            # The bucket's own accounting is unaffected: it measures elapsed
+            # wall-clock time on the next `take()` call, not whether this
+            # caller actually waited the full amount, so a capped sleep never
+            # desyncs the token count -- it only means a pathologically low
+            # cap is exceeded rather than the loop being wedged.
+            self._sleep(min(wait, MAX_THROTTLE_WAIT_SECONDS))
 
     def _handle_failure(self, stored: StoredAsset, error_class: ErrorClass, message: str) -> WorkerResult:
         asset_id = stored.asset.immich_id
