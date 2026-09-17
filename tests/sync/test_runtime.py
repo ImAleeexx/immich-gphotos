@@ -52,14 +52,30 @@ def test_tick_processes_up_to_the_limit(rig):
     assert runtime.tick(limit=3).processed == 2
 
 
-def test_tick_does_nothing_outside_the_window(rig):
+def test_outside_the_window_hash_checks_proceed_but_transfer_defers(rig):
+    """The window gates byte transfer only. An asset the dedup checks clear
+    for free (already present remotely) must still sync at any hour; only an
+    asset that genuinely needs bytes moved waits for the window -- and doing
+    so must not fail it, burn a retry attempt, or halt the rest of the batch."""
     assets, events, gphotos, worker, clock = rig
-    assets.upsert_pending(asset("a"), Priority.WEBHOOK)
+    gphotos.present["sum-present"] = "existing-key"  # already in Google
+    assets.upsert_pending(asset("present"), Priority.WEBHOOK)
+    assets.upsert_pending(asset("needs-upload"), Priority.WEBHOOK)
+
     settings = Settings(window=Window(start=time(1, 0), end=time(6, 0)))  # it is 12:00
-    result = Runtime(assets, worker, settings, clock, events).tick()
+    result = Runtime(assets, worker, settings, clock, events).tick(limit=5)
+
     assert result.window_closed is True
-    assert result.processed == 0
-    assert gphotos.uploads == []
+    assert result.processed == 2
+    assert result.deferred == 1
+    assert gphotos.uploads == []  # no bytes moved outside the window
+
+    already_present = assets.get("present")
+    assert already_present.state == AssetState.SYNCED  # hash check cleared it for free
+
+    deferred = assets.get("needs-upload")
+    assert deferred.state == AssetState.PENDING
+    assert deferred.attempts == 0  # not the asset's fault, no attempt burned
 
 
 def test_an_auth_failure_pauses_the_runtime(rig):

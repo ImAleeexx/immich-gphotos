@@ -12,7 +12,14 @@ from immich_gphotos.sync.worker import Worker
 class TickResult:
     processed: int = 0
     halted: bool = False
+    # Whether the schedule window was closed during this tick. This no
+    # longer means "nothing ran" -- claim_next, eligibility, the local
+    # duplicate lookup and the remote hash check all proceed regardless of
+    # the window. It only means that any asset which still needed bytes
+    # moved after those checks was deferred rather than uploaded; see
+    # `deferred`.
     window_closed: bool = False
+    deferred: int = 0
 
 
 class Runtime:
@@ -49,14 +56,22 @@ class Runtime:
     def tick(self, limit: int = 8) -> TickResult:
         if self._paused_reason:
             return TickResult()
-        if not transfer_allowed(self._clock.now(), self._settings.window):
-            return TickResult(window_closed=True)
+
+        # Schedule and bandwidth gate the byte transfer only -- claiming,
+        # eligibility, the local duplicate lookup and the remote hash check
+        # all run at any hour. Computed once per tick and handed to every
+        # asset in the batch, so the whole batch sees a consistent window
+        # state rather than possibly straddling the boundary mid-tick.
+        window_open = transfer_allowed(self._clock.now(), self._settings.window)
 
         processed = 0
+        deferred = 0
         claimed = self._assets.claim_next(limit=limit)
         for index, stored in enumerate(claimed):
-            result = self._worker.process(stored)
+            result = self._worker.process(stored, transfer_allowed=window_open)
             processed += 1
+            if result.deferred:
+                deferred += 1
             if result.halt:
                 reason = result.error_class.value if result.error_class else "unknown"
                 self.pause(reason)
@@ -71,4 +86,4 @@ class Runtime:
                 for stranded in claimed[index + 1 :]:
                     self._assets.requeue(stranded.asset.immich_id, self._clock.now())
                 return TickResult(processed=processed, halted=True)
-        return TickResult(processed=processed)
+        return TickResult(processed=processed, window_closed=not window_open, deferred=deferred)

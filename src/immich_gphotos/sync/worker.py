@@ -13,6 +13,13 @@ from immich_gphotos.sync.eligibility import check_eligibility
 
 HALT_RETRY_DELAY = timedelta(minutes=10)
 
+# How long a transfer-window-deferred asset waits before being reclaimed. Long
+# enough that an idle background loop (which ticks every couple of seconds)
+# does not re-run the remote hash check dozens of times a minute for the
+# whole closed window; short enough that transfer resumes promptly once the
+# window reopens or is widened.
+WINDOW_RETRY_DELAY = timedelta(minutes=15)
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,6 +31,7 @@ class WorkerResult:
     reason: str | None = None
     error_class: ErrorClass | None = None
     halt: bool = False
+    deferred: bool = False
 
 
 class Worker:
@@ -45,7 +53,18 @@ class Worker:
         self._retry = retry
         self._clock = clock
 
-    def process(self, stored: StoredAsset) -> WorkerResult:
+    def process(self, stored: StoredAsset, *, transfer_allowed: bool = True) -> WorkerResult:
+        """Process one asset.
+
+        `transfer_allowed` gates only the byte-moving step (resolving bytes
+        off Immich and uploading them to Google). Eligibility, the local
+        duplicate lookup and the remote hash check all run regardless, since
+        the spec calls those "tiny" and wants them clearing the queue for
+        free at any hour. An asset that clears eligibility and both dedup
+        checks but still needs bytes moved, and is asked outside the
+        schedule window, is handed back to the queue rather than uploaded --
+        see the `deferred` branch below.
+        """
         asset = stored.asset
 
         reason = check_eligibility(asset, self._filters)
@@ -63,6 +82,19 @@ class Worker:
             if remote_key:
                 self._assets.mark_synced(asset.immich_id, remote_key, Outcome.ALREADY_PRESENT)
                 return WorkerResult(AssetState.SYNCED, Outcome.ALREADY_PRESENT, remote_key)
+
+            if not transfer_allowed:
+                # Neither dedup check cleared it for free -- this asset
+                # genuinely needs bytes moved. That's the one thing the
+                # schedule window gates. Hand it back to PENDING without
+                # counting an attempt (this is not the asset's fault, the
+                # same reasoning `requeue` already exists for on the halt
+                # path) and move on; the runtime keeps processing the rest
+                # of the batch rather than stopping.
+                self._assets.requeue(asset.immich_id, self._clock.now() + WINDOW_RETRY_DELAY)
+                return WorkerResult(
+                    AssetState.PENDING, reason="deferred: outside the transfer window", deferred=True
+                )
 
             resolved = self._resolver.resolve(asset)
             try:
