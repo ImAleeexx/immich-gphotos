@@ -99,6 +99,13 @@ def test_overflow_creates_a_second_google_album(rig):
     assert overflow.name.endswith("(2)")
     assert overflow.overflow_of == "alb-1"
 
+    # Re-running must not re-add "c" and "d" to the overflow album: membership
+    # is marked against the original album id, not the overflow key.
+    before = list(gphotos.albums[overflow.gp_album_id])
+    result = mirror.sync_once()
+    assert result.added == 0
+    assert gphotos.albums[overflow.gp_album_id] == before
+
 
 def test_empty_album_is_left_alone(rig):
     mirror, _, albums, immich, gphotos = rig
@@ -106,3 +113,15 @@ def test_empty_album_is_left_alone(rig):
     mirror.sync_once()
     assert albums.mapping("alb-empty") is None
     assert "album-Album alb-empty" not in gphotos.albums
+
+
+def test_chain_orders_overflow_albums_numerically_past_depth_nine(rig):
+    _, _, albums, _, _ = rig
+    albums.put("alb-1", "gp-1", "Album alb-1")
+    for n in range(2, 12):
+        albums.put(f"alb-1#{n}", f"gp-{n}", f"Album alb-1 ({n})", overflow_of="alb-1")
+
+    chain = albums.chain("alb-1")
+
+    assert [m.immich_album_id for m in chain] == ["alb-1"] + [f"alb-1#{n}" for n in range(2, 12)]
+    assert chain[-1].immich_album_id == "alb-1#11"

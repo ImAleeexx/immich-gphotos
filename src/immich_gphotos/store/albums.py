@@ -11,6 +11,13 @@ class AlbumMapping:
     overflow_of: str | None
 
 
+def _overflow_depth(mapping: AlbumMapping) -> int:
+    """0 for the base album, else the numeric suffix after `#`."""
+    if "#" not in mapping.immich_album_id:
+        return 0
+    return int(mapping.immich_album_id.rsplit("#", 1)[1])
+
+
 class AlbumRepo:
     """Maps Immich albums to Google albums, including overflow albums.
 
@@ -37,11 +44,10 @@ class AlbumRepo:
     def chain(self, immich_album_id: str) -> list[AlbumMapping]:
         with self._conn.lock:
             rows = self._conn.execute(
-                "SELECT * FROM album_map WHERE immich_album_id = ? OR overflow_of = ?"
-                " ORDER BY immich_album_id ASC",
+                "SELECT * FROM album_map WHERE immich_album_id = ? OR overflow_of = ?",
                 (immich_album_id, immich_album_id),
             ).fetchall()
-        return [
+        mappings = [
             AlbumMapping(
                 immich_album_id=r["immich_album_id"],
                 gp_album_id=r["gp_album_id"],
@@ -51,6 +57,10 @@ class AlbumRepo:
             )
             for r in rows
         ]
+        # Sort numerically by overflow depth, not lexicographically by key text:
+        # "alb-1#10" must sort after "alb-1#2", which a plain ORDER BY / string
+        # sort would get wrong. The base row (no "#") always sorts first.
+        return sorted(mappings, key=_overflow_depth)
 
     def put(
         self,
