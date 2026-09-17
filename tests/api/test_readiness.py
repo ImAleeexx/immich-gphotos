@@ -40,13 +40,11 @@ def test_delivery_is_pending_until_a_workflow_is_registered(configured_services)
 
 def test_delivery_is_ok_once_a_workflow_is_registered(configured_services):
     configured_services.settings_repo.set(WORKFLOW_ID_KEY, "wf-1")
-    configured_services.workflow_id = "wf-1"
     assert _check(evaluate_readiness(configured_services), "delivery").state == "ok"
 
 
 def test_a_fully_configured_quiet_system_is_ready(configured_services):
     configured_services.settings_repo.set(WORKFLOW_ID_KEY, "wf-1")
-    configured_services.workflow_id = "wf-1"
     readiness = evaluate_readiness(configured_services)
     assert readiness.overall == "ready"
     assert all(c.state == "ok" for c in readiness.checks)
@@ -109,3 +107,34 @@ def test_a_probe_that_raises_is_reported_rather_than_propagating(configured_serv
     check = _check(evaluate_readiness(configured_services), "transfer")
     assert check.state == "attention"
     assert "mid-rebuild" in check.detail
+
+
+def test_every_check_reports_rather_than_propagates_when_its_store_raises(rig_services):
+    """Every check -- not just transfer -- must survive a raising dependency.
+    A locked or corrupted sqlite file can surface through settings_repo,
+    cursors or assets alike; none of them may turn a poll of /api/readiness
+    into a 500."""
+
+    class Explodes:
+        def get(self, *args, **kwargs):
+            raise RuntimeError("store is locked")
+
+        def counts_by_state(self):
+            raise RuntimeError("store is locked")
+
+    class ExplodingRuntime:
+        @property
+        def paused_reason(self):
+            raise RuntimeError("store is locked")
+
+    rig_services.settings_repo = Explodes()
+    rig_services.cursors = Explodes()
+    rig_services.assets = Explodes()
+    rig_services.runtime = ExplodingRuntime()
+
+    readiness = evaluate_readiness(rig_services)
+
+    assert readiness.overall == "needs_setup"
+    assert len(readiness.checks) == 6
+    assert all(c.state == "attention" for c in readiness.checks)
+    assert all("store is locked" in c.detail for c in readiness.checks)

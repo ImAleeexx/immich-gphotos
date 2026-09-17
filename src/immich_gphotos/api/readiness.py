@@ -7,6 +7,7 @@ detection costs an HTTP round trip to Immich, and the reconciler covers the
 no-workflow case anyway.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -125,17 +126,7 @@ def _backfill_check(services: Services) -> Check:
 
 
 def _transfer_check(services: Services) -> Check:
-    try:
-        reason = getattr(services.runtime, "paused_reason", None)
-    except Exception as exc:  # readiness is polled; it must never 500
-        return Check(
-            "transfer",
-            "Transfer",
-            "attention",
-            f"Could not read the runtime: {exc}",
-            "/diagnostics",
-            "Open diagnostics",
-        )
+    reason = getattr(services.runtime, "paused_reason", None)
     if reason:
         return Check(
             "transfer", "Transfer", "attention", f"Paused: {reason}", "/diagnostics", "Open diagnostics"
@@ -144,10 +135,7 @@ def _transfer_check(services: Services) -> Check:
 
 
 def _failures_check(services: Services) -> Check:
-    try:
-        failed = services.assets.counts_by_state().get(AssetState.FAILED.value, 0)
-    except Exception as exc:  # same reason as _transfer_check
-        return Check("failures", "Failures", "attention", f"Could not read asset counts: {exc}")
+    failed = services.assets.counts_by_state().get(AssetState.FAILED.value, 0)
     if failed:
         noun = "asset" if failed == 1 else "assets"
         return Check(
@@ -161,15 +149,33 @@ def _failures_check(services: Services) -> Check:
     return Check("failures", "Failures", "ok", "No assets have exhausted their retries.")
 
 
+# Every probe above is a plain function that may hit sqlite (a locked or
+# corrupted store is exactly the failure class readiness must survive) and
+# is free to just let that exception happen -- `_run_safely` is the single
+# place that turns it into a reported check instead of a 500. Before this,
+# each probe caught its own exceptions, which is how `_backfill_check` went
+# unguarded in the first place: nothing forced a new probe to remember to do
+# it. Registering `(id, label, probe)` here means a probe is guarded by
+# construction, not by a convention a future check can forget.
+_PROBES: tuple[tuple[str, str, Callable[[Services], Check]], ...] = (
+    ("immich", "Immich", _immich_check),
+    ("google", "Google Photos", _google_check),
+    ("delivery", "Delivery", _delivery_check),
+    ("backfill", "Backfill", _backfill_check),
+    ("transfer", "Transfer", _transfer_check),
+    ("failures", "Failures", _failures_check),
+)
+
+
+def _run_safely(check_id: str, label: str, probe: Callable[[Services], Check], services: Services) -> Check:
+    try:
+        return probe(services)
+    except Exception as exc:  # readiness is polled; it must never 500
+        return Check(check_id, label, "attention", f"Could not evaluate this check: {exc}")
+
+
 def evaluate_readiness(services: Services) -> Readiness:
-    checks = (
-        _immich_check(services),
-        _google_check(services),
-        _delivery_check(services),
-        _backfill_check(services),
-        _transfer_check(services),
-        _failures_check(services),
-    )
+    checks = tuple(_run_safely(check_id, label, probe, services) for check_id, label, probe in _PROBES)
     by_id = {c.id: c for c in checks}
     # Setup outranks everything: on an unconfigured install the actionable
     # thing is the wizard, not whatever the idle runtime happens to report.
