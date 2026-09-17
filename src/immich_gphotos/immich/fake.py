@@ -26,6 +26,7 @@ class FakeImmichClient:
         self.downloads: list[str] = []
         self.created_workflows: list[dict] = []
         self.searches: list[dict] = []
+        self.album_asset_ids_calls: list[str] = []
 
     def server_version(self) -> tuple[int, int, int]:
         return self.version
@@ -62,6 +63,7 @@ class FakeImmichClient:
         return [ImmichAlbum(id=k, name=f"Album {k}", asset_count=len(v)) for k, v in self.albums.items()]
 
     def album_asset_ids(self, album_id: str) -> list[str]:
+        self.album_asset_ids_calls.append(album_id)
         return list(self.albums.get(album_id, []))
 
     def create_workflow(self, *, name: str, url: str, header_name: str, header_value: str) -> str:

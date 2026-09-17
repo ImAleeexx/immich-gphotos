@@ -159,6 +159,132 @@ def test_pool_halts_the_batch_without_starting_undispatched_waves(rig):
     runtime.close()
 
 
+def test_close_mid_tick_falls_back_to_sequential_processing_instead_of_raising(rig):
+    """I1: composition.rebuild_runtime calls close() on the outgoing Runtime
+    from the settings-save request thread, with no coordination against an
+    in-flight tick() on the background-loop thread. A tick already past its
+    first wave when close() lands must not let executor.submit's
+    RuntimeError ("cannot schedule new futures after shutdown") escape
+    tick() and strand the rest of its claimed batch in UPLOADING until
+    requeue_stale_uploading eventually notices -- it must finish the batch
+    on the calling thread instead."""
+    assets, events, gphotos, worker, clock, immich = rig
+    for name in ("a", "b", "c", "d"):
+        assets.upsert_pending(asset(name), Priority.WEBHOOK)
+        clock.advance(timedelta(seconds=1))
+
+    runtime = Runtime(assets, worker, Settings(worker_threads=2), clock, events, immich=immich)
+    real_process = worker.process
+
+    def process_and_race_a_settings_save(stored, **kwargs):
+        result = real_process(stored, **kwargs)
+        if stored.asset.immich_id == "b":
+            # Simulates another thread's rebuild_runtime completing (and
+            # calling close() on this now-outgoing Runtime) while this
+            # tick's first wave, [a, b], is still running.
+            runtime.close()
+        return result
+
+    worker.process = process_and_race_a_settings_save
+
+    result = runtime.tick(limit=4)
+
+    assert result.halted is False
+    assert result.processed == 4
+    for name in ("a", "b", "c", "d"):
+        assert assets.get(name).state == AssetState.SYNCED
+
+
+def test_run_wave_survives_close_racing_the_submit_call_itself(rig):
+    """The tiny window between _run_wave's `self._closing.is_set()` check
+    and its `executor.submit()` calls -- close() landing on another thread
+    in exactly that gap -- is closed by catching the RuntimeError
+    ThreadPoolExecutor raises for a submission after shutdown, not by that
+    flag check alone. Whatever was already submitted in this wave before the
+    race must still be awaited, and only the remainder run sequentially."""
+    assets, events, gphotos, worker, clock, immich = rig
+    assets.upsert_pending(asset("a"), Priority.WEBHOOK)
+    clock.advance(timedelta(seconds=1))
+    assets.upsert_pending(asset("b"), Priority.WEBHOOK)
+
+    runtime = Runtime(assets, worker, Settings(worker_threads=2), clock, events, immich=immich)
+    real_executor = runtime._executor()
+
+    class RacingExecutor:
+        """Stands in for the real pool: the second submit() call raises,
+        exactly as the real pool would if shut down in between."""
+
+        def __init__(self, real):
+            self._real = real
+            self.calls = 0
+
+        def submit(self, fn, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            return self._real.submit(fn, *args, **kwargs)
+
+    runtime._pool = RacingExecutor(real_executor)
+
+    result = runtime.tick(limit=2)
+
+    assert result.halted is False
+    assert result.processed == 2
+    assert assets.get("a").state == AssetState.SYNCED
+    assert assets.get("b").state == AssetState.SYNCED
+
+    real_executor.shutdown(wait=True)
+
+
+def test_album_allowlist_is_not_resolved_when_nothing_is_claimed(rig, tmp_path):
+    """I2: resolving filters.album_allowlist costs one Immich call per
+    configured album. Doing that unconditionally, before claim_next, cost
+    ~1,800 calls/hour per allowed album at the default IDLE_SLEEP_SECONDS --
+    almost all for ticks that claimed nothing. It must only be resolved once
+    this tick has actually claimed something."""
+    assets, events, gphotos, _, clock, immich = rig
+    immich.albums["album-1"] = []
+    filters = Filters(album_allowlist=frozenset({"album-1"}))
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    worker = Worker(assets, gphotos, resolver, filters, RetryPolicy(jitter=0.0), clock)
+    settings = Settings(filters=filters)
+    runtime = Runtime(assets, worker, settings, clock, events, immich=immich)
+
+    result = runtime.tick(limit=5)  # nothing enqueued -- claims nothing
+
+    assert result.processed == 0
+    assert immich.album_asset_ids_calls == []
+
+
+def test_a_failed_allowlist_resolution_requeues_the_claimed_batch(rig, tmp_path):
+    """Resolving the allowlist only after claim_next (I2) means a resolution
+    failure now happens after claim_next has already flipped those rows to
+    UPLOADING. tick() must return them to PENDING rather than let the
+    exception strand them there until requeue_stale_uploading eventually
+    notices -- and must not mark any row ineligible against a partial or
+    absent result (see I3)."""
+    assets, events, gphotos, _, clock, immich = rig
+    assets.upsert_pending(asset("a"), Priority.WEBHOOK)
+
+    def boom(album_id):
+        raise RuntimeError("immich unreachable")
+
+    immich.album_asset_ids = boom
+
+    filters = Filters(album_allowlist=frozenset({"album-1"}))
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    worker = Worker(assets, gphotos, resolver, filters, RetryPolicy(jitter=0.0), clock)
+    settings = Settings(filters=filters)
+    runtime = Runtime(assets, worker, settings, clock, events, immich=immich)
+
+    with pytest.raises(RuntimeError, match="immich unreachable"):
+        runtime.tick(limit=5)
+
+    stranded = assets.get("a")
+    assert stranded.state == AssetState.PENDING
+    assert stranded.attempts == 0
+
+
 def test_a_paused_runtime_does_no_work_until_resumed(rig):
     assets, events, gphotos, worker, clock, immich = rig
     assets.upsert_pending(asset("a"), Priority.WEBHOOK)

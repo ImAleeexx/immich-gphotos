@@ -1,3 +1,4 @@
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -64,6 +65,13 @@ class Runtime:
         # each worker thread's lazily-constructed gpmc client (threading.local
         # in GpmcClient) is actually reused rather than rebuilt every tick.
         self._pool: ThreadPoolExecutor | None = None
+        # Set by close() *before* the pool is shut down. A tick already in
+        # flight on this (now-outgoing) instance is not stopped by a
+        # settings-triggered rebuild -- see close()'s docstring -- so
+        # _run_wave checks this before every submission and falls back to
+        # running the rest of that wave on the calling thread instead of
+        # racing the pool's own shutdown.
+        self._closing = threading.Event()
 
     @property
     def paused_reason(self) -> str | None:
@@ -88,9 +96,32 @@ class Runtime:
         # asset in the batch, so the whole batch sees a consistent window
         # state rather than possibly straddling the boundary mid-tick.
         window_open = transfer_allowed(self._clock.now(), self._settings.window)
-        album_allowlist_ids = self._album_allowlist_ids()
 
         claimed = self._assets.claim_next(limit=limit)
+
+        # Resolved only when this tick actually claimed something, and only
+        # after the claim -- not unconditionally up front. Every idle tick
+        # (the common case: IDLE_SLEEP_SECONDS keeps this running roughly
+        # every 2 seconds) previously paid one Immich call per allowed album
+        # for nothing. See `_album_allowlist_ids`.
+        album_allowlist_ids: frozenset[str] | None = None
+        if claimed:
+            try:
+                album_allowlist_ids = self._album_allowlist_ids()
+            except Exception:
+                # claim_next already flipped these to UPLOADING via its one
+                # atomic UPDATE. A resolution failure here (an Immich call
+                # inside _album_allowlist_ids raising) must not strand them
+                # there until requeue_stale_uploading eventually notices --
+                # return them to PENDING first, exactly like the halt path
+                # below, then let the caller (BackgroundLoops.iterate, via
+                # _safely) record the failure. Re-raising rather than
+                # swallowing this also means no row is ever marked
+                # album_excluded against a partial or absent result.
+                for stranded in claimed:
+                    self._assets.requeue(stranded.asset.immich_id, self._clock.now())
+                raise
+
         # Bounded to at most worker_threads at a time ("a wave"). Waves run
         # one after another; within a wave, every asset is dispatched before
         # any of that wave's results are known. worker_threads == 1 means
@@ -149,8 +180,22 @@ class Runtime:
         this returns, which is what keeps the halt check in `tick` accurate:
         every asset in the wave has actually finished, one way or another,
         before the caller decides whether to stop.
+
+        Also falls back to the sequential path -- for whatever of `wave` is
+        not yet dispatched -- the moment `close()` has been (or is
+        concurrently being) called on this Runtime. See `close()`: a settings
+        save can rebuild and swap in a fresh Runtime while this one's tick()
+        is still mid-wave, and its pool may be shutting down underneath this
+        call. `self._closing` is checked first so the common case (not
+        closing) never even attempts a submission; the `try`/`except`
+        around the actual `submit()` calls closes the remaining race window
+        where `close()` lands in between that check and this wave's
+        dispatch. Either way, whatever was already submitted before that
+        point is still awaited -- never abandoned or double-processed --
+        and only the not-yet-submitted remainder of the wave runs here
+        instead.
         """
-        if len(wave) <= 1:
+        if len(wave) <= 1 or self._closing.is_set():
             return [
                 self._worker.process(
                     stored, transfer_allowed=window_open, album_allowlist_ids=album_allowlist_ids
@@ -158,15 +203,34 @@ class Runtime:
                 for stored in wave
             ]
         executor = self._executor()
-        futures = [
-            executor.submit(
-                self._worker.process,
-                stored,
-                transfer_allowed=window_open,
-                album_allowlist_ids=album_allowlist_ids,
-            )
-            for stored in wave
-        ]
+        futures: list = []
+        for i, stored in enumerate(wave):
+            try:
+                futures.append(
+                    executor.submit(
+                        self._worker.process,
+                        stored,
+                        transfer_allowed=window_open,
+                        album_allowlist_ids=album_allowlist_ids,
+                    )
+                )
+            except RuntimeError:
+                # Raced close(): the pool was shut down between this wave
+                # starting and this asset's turn to be dispatched. Assets
+                # already submitted (futures[:i]) keep running in the pool
+                # and are awaited normally; this one and the rest of the
+                # wave run sequentially instead of being lost or raising out
+                # of tick().
+                results = [future.result() for future in futures]
+                results.extend(
+                    self._worker.process(
+                        remaining,
+                        transfer_allowed=window_open,
+                        album_allowlist_ids=album_allowlist_ids,
+                    )
+                    for remaining in wave[i:]
+                )
+                return results
         return [future.result() for future in futures]
 
     def _executor(self) -> ThreadPoolExecutor:
@@ -182,25 +246,50 @@ class Runtime:
 
         `rebuild_runtime` calls this on the outgoing Runtime after a settings
         change swaps in a freshly built one, so pool threads do not leak on
-        every settings save. `wait=False`: a tick already in flight on this
-        (now-replaced) runtime keeps whatever it already submitted running to
-        completion in the background -- shutdown only refuses *new*
-        submissions from here on, which is safe since nothing will call
-        tick() on this instance again.
+        every settings save. This is *not* safe to treat as "nothing will
+        call tick() on this instance again": `rebuild_runtime` calls it from
+        the settings-save request thread, with no coordination against the
+        background-loop thread, which may still be mid-tick on this exact
+        (now-outgoing) instance. Without `self._closing`, that in-flight
+        tick's next wave would call `executor.submit` on an already-shutting-
+        down pool and raise `RuntimeError`, stranding whatever it had
+        claimed in UPLOADING until the next `requeue_stale_uploading` sweep.
+
+        `self._closing` is set *before* `shutdown()` so `_run_wave` can
+        notice and fall back to running sequentially on the calling thread
+        instead -- see there for the remaining race window and how it is
+        closed. `wait=False`: whatever this pool was already asked to do
+        keeps running to completion in the background; shutdown only
+        refuses new submissions from here on.
         """
+        self._closing.set()
         if self._pool is not None:
             self._pool.shutdown(wait=False, cancel_futures=False)
 
     def _album_allowlist_ids(self) -> frozenset[str] | None:
         """Resolve `filters.album_allowlist` (Immich album ids) to the set of
-        member asset ids, fresh for this tick.
+        member asset ids, fresh for whichever tick calls this.
 
         None means the filter is off (no allowlist configured) -- the common
-        case -- and skips the Immich calls entirely. Recomputing this once
-        per tick, the same way `window_open` is, rather than caching it for
-        the runtime's lifetime, means an asset added to (or removed from) an
-        allowed album shows up correctly the next time it is claimed, without
-        needing a settings save to force a rebuild.
+        case -- and skips the Immich calls entirely. `tick` only calls this
+        at all when that tick actually claimed something (claim_next
+        returned a non-empty batch): with IDLE_SLEEP_SECONDS driving a tick
+        roughly every 2 seconds, calling this unconditionally cost one
+        Immich request per configured album for nearly every tick, almost
+        all of which claimed nothing and threw the result away unused.
+
+        Recomputing this fresh rather than caching it for the runtime's
+        lifetime is necessary but not sufficient on its own for "an asset
+        added to (or removed from) an allowed album shows up correctly the
+        next time it is claimed": a non-member is marked ineligible with
+        `ALBUM_EXCLUDED_REASON` via `check_eligibility`, and `claim_next`
+        only ever claims PENDING rows. Recomputing this every time does
+        nothing for a row stuck in INELIGIBLE. What actually makes re-
+        evaluation happen is that `store.assets.AssetRepo.upsert_pending`
+        treats `ALBUM_EXCLUDED_REASON` as non-terminal and reopens such a
+        row back to PENDING -- so the next webhook or reconciler pass that
+        touches it puts it back in front of a `claim_next` call, which is
+        what this fresh resolution then actually gets to act on.
         """
         allowlist = self._settings.filters.album_allowlist
         if not allowlist:
