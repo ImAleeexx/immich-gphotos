@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from immich_gphotos.clock import Clock
 from immich_gphotos.config import Settings
+from immich_gphotos.immich.protocol import ImmichClient
 from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.store.events import EventRepo
 from immich_gphotos.sync.throttle import transfer_allowed
@@ -32,12 +33,18 @@ class Runtime:
         settings: Settings,
         clock: Clock,
         events: EventRepo,
+        *,
+        immich: ImmichClient,
     ) -> None:
         self._assets = assets
         self._worker = worker
         self._settings = settings
         self._clock = clock
         self._events = events
+        # Only used to resolve `settings.filters.album_allowlist` (Immich
+        # album ids) to member asset ids, once per tick -- see
+        # `_album_allowlist_ids`. Every other step in a tick is local/DB-only.
+        self._immich = immich
         self._paused_reason: str | None = None
 
     @property
@@ -63,12 +70,15 @@ class Runtime:
         # asset in the batch, so the whole batch sees a consistent window
         # state rather than possibly straddling the boundary mid-tick.
         window_open = transfer_allowed(self._clock.now(), self._settings.window)
+        album_allowlist_ids = self._album_allowlist_ids()
 
         processed = 0
         deferred = 0
         claimed = self._assets.claim_next(limit=limit)
         for index, stored in enumerate(claimed):
-            result = self._worker.process(stored, transfer_allowed=window_open)
+            result = self._worker.process(
+                stored, transfer_allowed=window_open, album_allowlist_ids=album_allowlist_ids
+            )
             processed += 1
             if result.deferred:
                 deferred += 1
@@ -87,3 +97,22 @@ class Runtime:
                     self._assets.requeue(stranded.asset.immich_id, self._clock.now())
                 return TickResult(processed=processed, halted=True)
         return TickResult(processed=processed, window_closed=not window_open, deferred=deferred)
+
+    def _album_allowlist_ids(self) -> frozenset[str] | None:
+        """Resolve `filters.album_allowlist` (Immich album ids) to the set of
+        member asset ids, fresh for this tick.
+
+        None means the filter is off (no allowlist configured) -- the common
+        case -- and skips the Immich calls entirely. Recomputing this once
+        per tick, the same way `window_open` is, rather than caching it for
+        the runtime's lifetime, means an asset added to (or removed from) an
+        allowed album shows up correctly the next time it is claimed, without
+        needing a settings save to force a rebuild.
+        """
+        allowlist = self._settings.filters.album_allowlist
+        if not allowlist:
+            return None
+        ids: set[str] = set()
+        for album_id in allowlist:
+            ids.update(self._immich.album_asset_ids(album_id))
+        return frozenset(ids)

@@ -66,6 +66,30 @@ def test_excluded_tag():
     assert check_eligibility(replace(BASE, tags=("private",)), f) == "tag_excluded"
 
 
+def test_album_allowlist_admits_a_member_and_excludes_a_non_member():
+    f = Filters(album_allowlist=frozenset({"album-1"}))
+    member = check_eligibility(BASE, f, frozenset({"a1", "other-asset"}))
+    assert member is None
+
+    non_member = check_eligibility(replace(BASE, immich_id="not-in-album"), f, frozenset({"a1"}))
+    assert non_member == "album_excluded"
+
+
+def test_album_allowlist_unset_ignores_membership_entirely():
+    """No allowlist configured -- the common case -- must not be affected by
+    whatever membership information (or lack of it) is passed in."""
+    assert check_eligibility(BASE, Filters(), None) is None
+    assert check_eligibility(BASE, Filters(), frozenset()) is None
+
+
+def test_album_allowlist_set_but_no_membership_supplied_fails_closed():
+    """A configured allowlist with no resolved membership (e.g. a caller that
+    forgot to resolve it) must exclude rather than silently admit everything --
+    that would defeat the point of an allowlist."""
+    f = Filters(album_allowlist=frozenset({"album-1"}))
+    assert check_eligibility(BASE, f, None) == "album_excluded"
+
+
 def test_reasons_are_stable_strings():
     """The UI groups by reason, so these must not drift."""
     assert check_eligibility(replace(BASE, visibility="hidden"), Filters()) == "hidden"

@@ -68,7 +68,13 @@ class Worker:
         # on it without a real sleep; production uses the real time.sleep.
         self._sleep = sleep
 
-    def process(self, stored: StoredAsset, *, transfer_allowed: bool = True) -> WorkerResult:
+    def process(
+        self,
+        stored: StoredAsset,
+        *,
+        transfer_allowed: bool = True,
+        album_allowlist_ids: frozenset[str] | None = None,
+    ) -> WorkerResult:
         """Process one asset.
 
         `transfer_allowed` gates only the byte-moving step (resolving bytes
@@ -79,10 +85,15 @@ class Worker:
         checks but still needs bytes moved, and is asked outside the
         schedule window, is handed back to the queue rather than uploaded --
         see the `deferred` branch below.
+
+        `album_allowlist_ids` is the set of Immich asset ids the runtime
+        resolved (once per tick, from `filters.album_allowlist`) as
+        belonging to an allowed album. It is only consulted when
+        `filters.album_allowlist` is actually set.
         """
         asset = stored.asset
 
-        reason = check_eligibility(asset, self._filters)
+        reason = check_eligibility(asset, self._filters, album_allowlist_ids)
         if reason is not None:
             self._assets.mark_ineligible(asset.immich_id, reason)
             return WorkerResult(AssetState.INELIGIBLE, reason=reason)

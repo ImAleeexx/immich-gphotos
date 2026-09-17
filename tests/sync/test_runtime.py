@@ -38,16 +38,17 @@ def rig(tmp_path):
     assets = AssetRepo(conn, clock)
     events = EventRepo(conn, clock)
     gphotos = FakeGooglePhotosClient()
-    resolver = ByteResolver(FakeImmichClient(contents={}), scratch=tmp_path / "scratch")
+    immich = FakeImmichClient(contents={})
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
     worker = Worker(assets, gphotos, resolver, Filters(), RetryPolicy(jitter=0.0), clock)
-    return assets, events, gphotos, worker, clock
+    return assets, events, gphotos, worker, clock, immich
 
 
 def test_tick_processes_up_to_the_limit(rig):
-    assets, events, gphotos, worker, clock = rig
+    assets, events, gphotos, worker, clock, immich = rig
     for i in range(5):
         assets.upsert_pending(asset(str(i)), Priority.WEBHOOK)
-    runtime = Runtime(assets, worker, Settings(), clock, events)
+    runtime = Runtime(assets, worker, Settings(), clock, events, immich=immich)
     assert runtime.tick(limit=3).processed == 3
     assert runtime.tick(limit=3).processed == 2
 
@@ -57,13 +58,13 @@ def test_outside_the_window_hash_checks_proceed_but_transfer_defers(rig):
     for free (already present remotely) must still sync at any hour; only an
     asset that genuinely needs bytes moved waits for the window -- and doing
     so must not fail it, burn a retry attempt, or halt the rest of the batch."""
-    assets, events, gphotos, worker, clock = rig
+    assets, events, gphotos, worker, clock, immich = rig
     gphotos.present["sum-present"] = "existing-key"  # already in Google
     assets.upsert_pending(asset("present"), Priority.WEBHOOK)
     assets.upsert_pending(asset("needs-upload"), Priority.WEBHOOK)
 
     settings = Settings(window=Window(start=time(1, 0), end=time(6, 0)))  # it is 12:00
-    result = Runtime(assets, worker, settings, clock, events).tick(limit=5)
+    result = Runtime(assets, worker, settings, clock, events, immich=immich).tick(limit=5)
 
     assert result.window_closed is True
     assert result.processed == 2
@@ -79,12 +80,12 @@ def test_outside_the_window_hash_checks_proceed_but_transfer_defers(rig):
 
 
 def test_an_auth_failure_pauses_the_runtime(rig):
-    assets, events, gphotos, worker, clock = rig
+    assets, events, gphotos, worker, clock, immich = rig
     gphotos.fail_on["sum-a"] = GPhotosError("401", ErrorClass.AUTH_INVALID)
     assets.upsert_pending(asset("a"), Priority.WEBHOOK)
     assets.upsert_pending(asset("b"), Priority.WEBHOOK)
 
-    runtime = Runtime(assets, worker, Settings(), clock, events)
+    runtime = Runtime(assets, worker, Settings(), clock, events, immich=immich)
     result = runtime.tick(limit=5)
 
     assert result.halted is True
@@ -100,17 +101,46 @@ def test_an_auth_failure_pauses_the_runtime(rig):
 
 
 def test_a_paused_runtime_does_no_work_until_resumed(rig):
-    assets, events, gphotos, worker, clock = rig
+    assets, events, gphotos, worker, clock, immich = rig
     assets.upsert_pending(asset("a"), Priority.WEBHOOK)
-    runtime = Runtime(assets, worker, Settings(), clock, events)
+    runtime = Runtime(assets, worker, Settings(), clock, events, immich=immich)
     runtime.pause("credentials expired")
     assert runtime.tick().processed == 0
     runtime.resume()
     assert runtime.tick().processed == 1
 
 
+def test_album_allowlist_is_resolved_and_enforced_per_tick(rig, tmp_path):
+    """Filters.album_allowlist names Immich album ids; Runtime resolves them
+    to member asset ids via ImmichClient once per tick and the worker admits
+    only members.
+
+    Built with its own Worker (rather than the `rig` one, which is fixed to
+    plain `Filters()`) since the allowlist lives on `Filters`, which a real
+    Worker closes over at construction -- exactly as `composition.py` builds
+    a Worker and a Runtime from the same `Settings` in production."""
+    assets, events, gphotos, _, clock, immich = rig
+    immich.albums["album-1"] = ["in-album"]
+    assets.upsert_pending(asset("in-album"), Priority.WEBHOOK)
+    assets.upsert_pending(asset("not-in-album"), Priority.WEBHOOK)
+
+    filters = Filters(album_allowlist=frozenset({"album-1"}))
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    worker = Worker(assets, gphotos, resolver, filters, RetryPolicy(jitter=0.0), clock)
+    settings = Settings(filters=filters)
+    result = Runtime(assets, worker, settings, clock, events, immich=immich).tick(limit=5)
+
+    assert result.processed == 2
+    admitted = assets.get("in-album")
+    assert admitted.state == AssetState.SYNCED
+
+    excluded = assets.get("not-in-album")
+    assert excluded.state == AssetState.INELIGIBLE
+    assert excluded.ineligible_reason == "album_excluded"
+
+
 def test_events_are_recorded_and_bounded(rig):
-    assets, events, _, worker, clock = rig
+    assets, events, _, worker, clock, immich = rig
     for i in range(5):
         events.add("info", f"message {i}")
     assert len(events.recent(3)) == 3

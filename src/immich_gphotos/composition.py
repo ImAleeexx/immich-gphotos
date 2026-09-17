@@ -65,7 +65,7 @@ def build_runtime_graph(
         else None
     )
     worker = Worker(assets, gphotos, resolver, settings.filters, settings.retry, clock, bandwidth=bandwidth)
-    runtime = Runtime(assets, worker, settings, clock, events)
+    runtime = Runtime(assets, worker, settings, clock, events, immich=immich)
     backfill = BackfillJob(immich, assets, cursors, settings)
     loops = BackgroundLoops(
         runtime=runtime,
