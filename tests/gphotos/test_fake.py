@@ -1,6 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from immich_gphotos.gphotos.fake import FakeGooglePhotosClient
+from immich_gphotos.gphotos.protocol import GPhotosError
+from immich_gphotos.models import ErrorClass
 
 
 def test_exists_reports_preloaded_hashes():
@@ -30,3 +34,20 @@ def test_trash_records_checksums():
     fake.trash(["sum-a"])
     assert fake.trashed == ["sum-a"]
     assert fake.exists("sum-a") is None
+
+
+def test_fail_methods_injects_failure_on_exists():
+    error = GPhotosError("boom", ErrorClass.TRANSIENT)
+    fake = FakeGooglePhotosClient(present={"sum-a": "key-a"}, fail_methods={"exists": error})
+    with pytest.raises(GPhotosError):
+        fake.exists("sum-a")
+
+
+def test_fail_methods_injects_failure_on_trash():
+    error = GPhotosError("boom", ErrorClass.TRANSIENT)
+    fake = FakeGooglePhotosClient(present={"sum-a": "key-a"}, fail_methods={"trash": error})
+    with pytest.raises(GPhotosError):
+        fake.trash(["sum-a"])
+    # the failed call must not have mutated state
+    assert fake.trashed == []
+    assert fake.exists("sum-a") == "key-a"

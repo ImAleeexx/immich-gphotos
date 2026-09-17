@@ -2,13 +2,15 @@ import threading
 from collections.abc import Sequence
 from pathlib import Path
 
+import requests.exceptions
+
 from immich_gphotos.config import Quality
 from immich_gphotos.gphotos.protocol import GPhotosError
 from immich_gphotos.models import ErrorClass
 
 ALBUM_BATCH = 500
 
-_AUTH_MARKERS = ("401", "403", "unauthorized", "auth token", "auth_data", "authentication")
+_AUTH_MARKERS = ("401", "forbidden", "unauthorized", "auth token", "auth_data", "authentication")
 _RATE_MARKERS = ("429", "rate limit", "too many requests")
 _QUOTA_MARKERS = ("quota", "storage full", "out of space")
 _TRANSIENT_MARKERS = ("timed out", "timeout", "connection", "temporarily", "502", "503", "504")
@@ -20,20 +22,27 @@ def classify_gpmc_error(exc: BaseException) -> ErrorClass:
     gpmc raises few typed exceptions, so most classification is textual. Refine
     this against real failures; the cost of a wrong guess is a retry, except for
     AUTH_INVALID and QUOTA_EXHAUSTED, which halt transfer.
+
+    Quota markers are checked before auth markers: Google surfaces storage and
+    rate quota errors as HTTP 403 with a quota reason string, and misrouting
+    those to AUTH_INVALID sends someone to re-extract auth_data for no reason.
     """
     from gpmc.exceptions import UploadRejectedError
 
     if isinstance(exc, UploadRejectedError):
         return ErrorClass.UNSUPPORTED_MEDIA
-    if isinstance(exc, ConnectionError | TimeoutError):
+    if isinstance(
+        exc,
+        ConnectionError | TimeoutError | requests.exceptions.ConnectionError | requests.exceptions.Timeout,
+    ):
         return ErrorClass.TRANSIENT
     text = str(exc).lower()
+    if any(m in text for m in _QUOTA_MARKERS):
+        return ErrorClass.QUOTA_EXHAUSTED
     if any(m in text for m in _AUTH_MARKERS):
         return ErrorClass.AUTH_INVALID
     if any(m in text for m in _RATE_MARKERS):
         return ErrorClass.RATE_LIMITED
-    if any(m in text for m in _QUOTA_MARKERS):
-        return ErrorClass.QUOTA_EXHAUSTED
     if any(m in text for m in _TRANSIENT_MARKERS):
         return ErrorClass.TRANSIENT
     return ErrorClass.UNKNOWN
