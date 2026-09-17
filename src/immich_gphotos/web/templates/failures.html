@@ -111,7 +111,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const errorTd = document.createElement("td");
       if (f.error_class) {
         const pill = document.createElement("span");
-        pill.className = "pill--danger";
+        pill.className = "pill pill--danger";
         pill.textContent = f.error_class;
         errorTd.appendChild(pill);
       } else {

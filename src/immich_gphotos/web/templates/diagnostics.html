@@ -12,7 +12,7 @@
       {% for e in events %}
       <tr>
         <td class="num">{{ e.ts }}</td>
-        <td><span class="pill--{{ level_tone.get(e.level, 'pending') }}">{{ e.level }}</span></td>
+        <td><span class="pill pill--{{ level_tone.get(e.level, 'pending') }}">{{ e.level }}</span></td>
         <td>{{ e.message }}</td>
       </tr>
       {% else %}

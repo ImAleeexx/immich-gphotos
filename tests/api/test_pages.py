@@ -13,12 +13,32 @@ def test_every_page_links_the_stylesheet_and_favicon(http, path):
     assert '/static/favicon.svg' in body
 
 
-@pytest.mark.parametrize("path", ["/", "/failures", "/settings", "/diagnostics", "/wizard"])
-def test_no_page_carries_an_inline_style_block(http, path):
+@pytest.mark.parametrize(
+    "path", ["/", "/failures", "/settings", "/diagnostics", "/wizard", "/login", "/no-such-page"]
+)
+def test_no_page_carries_an_inline_style_block(http, rig_services, path):
     """All styling lives in app.css. An inline <style> block is how the old
     shell worked and is what this redesign removes -- it defeats caching and
-    puts the design system out of reach of every other page."""
-    assert "<style>" not in http.get(path).text
+    puts the design system out of reach of every other page.
+
+    /login is fetched with a fresh, unauthenticated client built straight
+    from `rig_services`: it renders for a visitor with no session, and the
+    already-logged-in `http` fixture would not exercise that path.
+    /no-such-page is the 404 page, requested the same way
+    `test_an_unknown_path_renders_the_branded_404_for_a_browser` does.
+    """
+    if path == "/login":
+        from fastapi.testclient import TestClient
+
+        from immich_gphotos.api.app import create_app
+
+        client = TestClient(create_app(rig_services), follow_redirects=False)
+        body = client.get(path).text
+    elif path == "/no-such-page":
+        body = http.get(path, headers={"accept": "text/html"}).text
+    else:
+        body = http.get(path).text
+    assert "<style>" not in body
 
 
 @pytest.mark.parametrize("path", ["/", "/failures", "/settings", "/diagnostics"])

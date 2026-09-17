@@ -2,47 +2,6 @@
 {% set show_chrome = false %}
 {% block page_title %}Sign in · immich-gphotos{% endblock %}
 {% block content %}
-<style>
-  .login {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--space-5);
-    max-width: 26rem;
-    margin-inline: auto;
-    padding-block: var(--space-7) var(--space-8);
-  }
-
-  .login__brand {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2);
-    color: var(--text);
-    font-weight: 600;
-  }
-
-  .login__brand .brand__mark {
-    width: 28px;
-    height: 28px;
-    color: var(--accent);
-  }
-
-  .login__panel {
-    width: 100%;
-  }
-
-  .login__panel form {
-    display: grid;
-  }
-
-  .login__panel p {
-    color: var(--text-muted);
-  }
-
-  .login__submit {
-    width: 100%;
-  }
-</style>
 <div class="login stagger">
   <div class="login__brand">
     <svg class="brand__mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">

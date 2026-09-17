@@ -402,10 +402,7 @@ textarea:focus {
 }
 
 /* Status pills */
-.pill--ok,
-.pill--warn,
-.pill--danger,
-.pill--pending {
+.pill {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
@@ -415,10 +412,7 @@ textarea:focus {
   font-weight: 500;
 }
 
-.pill--ok::before,
-.pill--warn::before,
-.pill--danger::before,
-.pill--pending::before {
+.pill::before {
   content: "";
   width: 6px;
   height: 6px;
@@ -623,6 +617,358 @@ textarea:focus {
   opacity: 0;
   transform: translateY(8px);
   transition: opacity var(--dur-mid) var(--ease-out), transform var(--dur-mid) var(--ease-out);
+}
+
+/* ---------------------------------------------------------------------------
+   Dashboard -- status hero, counters, backfill meter, activity feed and the
+   pre-sync readiness checklist.
+--------------------------------------------------------------------------- */
+
+.hero {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.hero__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.hero__sub {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+}
+
+.panel--raised {
+  box-shadow: var(--shadow-md);
+}
+
+.counters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: var(--space-4);
+  margin: 0;
+}
+
+.counter {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.counter dt {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.counter dd {
+  margin: 0;
+  font-size: 1.375rem;
+  font-weight: 600;
+}
+
+/* The backfill cursor is a page number, not a fraction of a known total, so
+   the fill cannot report real progress -- it sweeps to say "working"
+   without claiming a percentage that does not exist. */
+.meter {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+
+.meter__bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.meter__fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 40%;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: meter-sweep calc(var(--dur-slow) * 5) var(--ease-out) infinite;
+}
+
+@keyframes meter-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+.meter__label {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.grid {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.grid--7-5 {
+  grid-template-columns: 7fr 5fr;
+}
+
+@media (max-width: 760px) {
+  .grid--7-5 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.feed__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.feed__item:last-child {
+  border-bottom: none;
+}
+
+.feed__time {
+  flex: none;
+  color: var(--text-faint);
+  font-size: 0.8125rem;
+}
+
+.feed__message {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+}
+
+.feed__empty {
+  color: var(--text-muted);
+}
+
+.checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.check {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.check__detail {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-muted);
+}
+
+.check__action {
+  flex: none;
+}
+
+.check--done {
+  background: var(--ok-dim);
+  border-color: transparent;
+  color: var(--ok);
+}
+
+/* ---------------------------------------------------------------------------
+   Settings -- the toggle switch and the save button's in-flight state.
+--------------------------------------------------------------------------- */
+
+.switch {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: none;
+  width: 2.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+
+.switch::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: calc(1.25rem - 4px);
+  height: calc(1.25rem - 4px);
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+}
+
+.switch:checked {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.switch:checked::before {
+  transform: translateX(1rem);
+  background: var(--accent);
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  cursor: pointer;
+}
+
+.btn.is-busy {
+  cursor: progress;
+  animation: busy-pulse calc(var(--dur-slow) * 3) var(--ease-out) infinite alternate;
+}
+
+@keyframes busy-pulse {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.55;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Failures table -- a compact retry action and a message cell that wraps
+   instead of stretching the table to fit an arbitrary Google/gpmc error.
+--------------------------------------------------------------------------- */
+
+.btn--sm {
+  padding: var(--space-1) var(--space-3);
+  font-size: 0.8125rem;
+}
+
+.cell--wrap {
+  max-width: 26rem;
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* ---------------------------------------------------------------------------
+   Setup wizard -- the copy-to-clipboard button beside each ADB command.
+--------------------------------------------------------------------------- */
+
+.btn--copy {
+  flex: none;
+}
+
+.btn--copy.is-copied {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+/* ---------------------------------------------------------------------------
+   Empty states -- the 404 page, and the "nothing here yet" placeholders in
+   diagnostics and failures.
+--------------------------------------------------------------------------- */
+
+.empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+}
+
+.empty p {
+  margin: 0;
+}
+
+.empty__code {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: clamp(2.5rem, 2rem + 2vw, 3.5rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-faint);
+}
+
+.empty__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+/* ---------------------------------------------------------------------------
+   Login -- moved out of an inline <style> block in login.html, which is
+   exactly what the rest of this redesign removed from base.html.
+--------------------------------------------------------------------------- */
+
+.login {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-5);
+  max-width: 26rem;
+  margin-inline: auto;
+  padding-block: var(--space-7) var(--space-8);
+}
+
+.login__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.login__brand .brand__mark {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+}
+
+.login__panel {
+  width: 100%;
+}
+
+.login__panel form {
+  display: grid;
+}
+
+.login__panel p {
+  color: var(--text-muted);
+}
+
+.login__submit {
+  width: 100%;
 }
 
 /* Reduced motion -- last in the file so it wins. */
