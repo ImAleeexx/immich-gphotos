@@ -66,11 +66,13 @@ works, not just that something was typed:
 3. **Workflow.** One button registers an Immich workflow — trigger
    `AssetCreate`, step `immich-plugin-core#webhook` — with a generated shared
    secret. On Immich versions without the workflow system this step is
-   skipped and the service instead polls on a reconcile interval; the
-   dashboard states which mode is active.
-4. **Options.** Quality, schedule window, bandwidth cap, content filters,
-   whether to mirror albums, and whether to start backfilling existing assets
-   immediately.
+   skipped and the service instead polls on a reconcile interval; the wizard
+   states which mode is active.
+4. **Options.** Quality, worker threads, bandwidth cap, whether to mirror
+   albums, whether to propagate deletions (behind typed confirmation), and
+   whether to start backfilling existing assets immediately. Schedule window
+   and content filters take their defaults in this release; see Settings
+   below.
 
 ## Settings
 
@@ -99,6 +101,13 @@ library, or more than 500 assets, whichever is reached first, the service
 refuses to execute that pass and raises an alert in the UI instead. This
 guards against an Immich database restored from an old backup being read as
 "everything was deleted." Neither threshold can be disabled.
+
+**Known limitation.** Detection relies on Immich still reporting the asset as
+trashed at the next reconcile. An asset removed from Immich so completely
+that it never passes through that trashed state while this service is
+watching (for example, a hard delete that happens while the container is
+stopped) is not currently detected or propagated. Closing this gap needs a
+separate full-library comparison pass, which does not exist yet.
 
 ## Reading originals directly
 
@@ -145,7 +154,10 @@ under `IGP_DATA_DIR`, entered through the setup wizard.
   `immich_gphotos_paused` (1 while transfer is halted awaiting a human, e.g.
   because Google credentials expired).
 - The dashboard (`/`) shows the same counts live over server-sent events, plus
-  backfill progress and whether the fast, direct-read path is active.
+  backfill progress and whether direct reads (`IGP_ALLOW_DIRECT_READS`) are
+  enabled. That flag reflects configuration, not a live per-asset check --
+  whether a given asset's original is actually reachable at that path still
+  depends on the mount at the moment it syncs.
 
 ## What has actually been verified
 
