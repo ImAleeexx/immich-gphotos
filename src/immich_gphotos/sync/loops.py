@@ -65,7 +65,15 @@ class BackgroundLoops:
         else:
             self._paused_at = None
 
-        self._runtime.tick()
+        # Was called bare, unlike every other step below -- the one gap in
+        # this method's own "one failing loop must not kill the rest"
+        # guarantee. A raise here (a settings save racing an in-flight tick,
+        # an Immich failure inside the album allowlist resolution, or a
+        # sqlite error from mark_ineligible/media_key_for_checksum, both of
+        # which sit outside Worker.process's own try block) used to abort
+        # this whole iterate() call, skipping reconcile, stale-upload
+        # recovery, album sync, deletions and backfill for that pass.
+        self._safely("tick", self._runtime.tick)
 
         if self._next_reconcile is None or now >= self._next_reconcile:
             self._safely("reconcile", self._reconciler.run_once)

@@ -163,6 +163,43 @@ def test_a_paused_runtime_is_retried_after_the_cooldown(rig):
     PausedRuntime.paused_reason = "auth_invalid"  # restore for other tests
 
 
+def test_a_tick_failure_does_not_abort_the_rest_of_the_iteration(rig):
+    """I4: every other step in iterate() goes through _safely, but tick()
+    did not -- a raise from it (I1's RuntimeError from a settings save
+    racing an in-flight tick, an Immich failure inside the album allowlist
+    resolution, or a sqlite error from mark_ineligible/
+    media_key_for_checksum, both of which sit outside Worker.process's own
+    try block) used to abort this whole iterate() call, skipping reconcile,
+    stale-upload recovery, album sync, deletions and backfill for that
+    pass."""
+    clock, events = rig
+
+    class FailingRuntime(Spy):
+        paused_reason = None
+
+        def tick(self):
+            raise RuntimeError("boom")
+
+    assets = StubAssets()
+    loop = BackgroundLoops(
+        runtime=FailingRuntime(),
+        reconciler=Spy(),
+        backfill=StubBackfill(False),
+        album_mirror=Spy(),
+        deletion_sweeper=Spy(),
+        settings=Settings(),
+        clock=clock,
+        events=events,
+        assets=assets,
+    )
+
+    ran = loop.iterate()
+
+    assert ran["reconciled"] is True  # the rest of the pass still ran
+    assert "requeue_stale_uploading" in assets.calls
+    assert any("tick failed" in e["message"] for e in events.recent(10))
+
+
 def test_run_forever_stops_when_the_event_is_set(rig):
     clock, events = rig
     loop = loops(clock, events, Settings())
