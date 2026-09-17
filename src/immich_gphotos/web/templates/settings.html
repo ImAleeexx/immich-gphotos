@@ -1,35 +1,77 @@
 {% extends "base.html" %}
 {% set nav_active = "settings" %}
+{% block page_title %}Settings &middot; immich-gphotos{% endblock %}
 {% block content %}
 <h1>Settings</h1>
-<form id="settings-form" class="card">
-  <label>Quality
-    <select name="quality">
-      <option value="original">Original</option>
-      <option value="saver">Storage saver</option>
-      <option value="quota">Quota-friendly</option>
-    </select>
-  </label>
-  <label><input type="checkbox" name="albums_enabled"> Sync albums</label>
-  <label><input type="checkbox" name="deletions_enabled"> Propagate deletions</label>
-  <p class="hint">When enabled, deleting an item in Immich moves the matching item in Google
-    Photos to trash, where it stays recoverable for 60 days.</p>
-  <label>Worker threads
-    <input type="number" name="worker_threads" min="1" max="16">
-  </label>
-  <label>Bandwidth (bytes/sec, blank = unlimited, minimum 65536)
-    <input type="number" name="bandwidth_bytes_per_second" min="65536">
-  </label>
-  <button type="submit">Save</button>
+<form id="settings-form" class="stagger">
+  <section class="panel" style="margin-bottom: var(--space-5);">
+    <h2>Transfer</h2>
+    <label class="field">
+      <span class="field__label">Quality</span>
+      <select name="quality" class="input">
+        <option value="original">Original</option>
+        <option value="saver">Storage saver</option>
+        <option value="quota">Quota-friendly</option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="field__label">Worker threads</span>
+      <input class="input" type="number" name="worker_threads" min="1" max="16" inputmode="numeric">
+    </label>
+    <label class="field">
+      <span class="field__label">Bandwidth (bytes/sec, blank = unlimited, minimum 65536)</span>
+      <input type="number" name="bandwidth_bytes_per_second" min="65536" inputmode="numeric" class="input">
+    </label>
+  </section>
+
+  <section class="panel">
+    <h2>Scope</h2>
+    <label class="field">
+      <span class="field__label">Sync albums</span>
+      <input type="checkbox" name="albums_enabled" class="switch">
+    </label>
+    <div class="field">
+      <span class="field__label">Propagate deletions</span>
+      <label class="switch-row">
+        <input type="checkbox" name="deletions_enabled" class="switch">
+        <span id="deletions-pill" class="pill--danger">Off</span>
+      </label>
+      <p class="field__hint">When enabled, deleting an item in Immich moves the matching item in
+        Google Photos to trash, where it stays recoverable for 60 days.</p>
+      <p class="field__error" id="deletions-error" hidden></p>
+    </div>
+  </section>
+
+  <p class="field__error" id="form-error" hidden></p>
+
+  <button type="submit" id="settings-submit" class="btn btn--primary" style="margin-top: var(--space-4);">
+    Save
+  </button>
 </form>
 <script>
   const form = document.getElementById("settings-form");
+  const submitButton = document.getElementById("settings-submit");
+  const deletionsPill = document.getElementById("deletions-pill");
+  const formError = document.getElementById("form-error");
+  const deletionsError = document.getElementById("deletions-error");
+
   // Must match immich_gphotos.api.routes.DELETIONS_ENABLE_PHRASE exactly --
   // the server rejects anything else when turning deletions on.
   const DELETIONS_ENABLE_PHRASE = "ENABLE DELETIONS";
 
   let deletionsEnabledAtLoad = false;
   let confirmedPhrase = null;
+
+  function clearErrors() {
+    formError.hidden = true;
+    formError.textContent = "";
+    deletionsError.hidden = true;
+    deletionsError.textContent = "";
+  }
+
+  function updateDeletionsPill() {
+    deletionsPill.textContent = form.deletions_enabled.checked ? "On" : "Off";
+  }
 
   async function load() {
     const s = await (await fetch("/api/settings")).json();
@@ -40,55 +82,76 @@
     confirmedPhrase = null;
     form.worker_threads.value = s.worker_threads;
     form.bandwidth_bytes_per_second.value = s.bandwidth_bytes_per_second ?? "";
+    updateDeletionsPill();
   }
 
   // Turning deletions ON is the one direction that needs friction. Turning
   // it off must stay a single click, so this only intercepts the
   // off-to-on transition.
-  form.deletions_enabled.addEventListener("change", () => {
+  form.deletions_enabled.addEventListener("change", async () => {
+    updateDeletionsPill();
     if (!form.deletions_enabled.checked) {
       confirmedPhrase = null;
       return;
     }
     if (deletionsEnabledAtLoad) return; // already on; nothing new to confirm
-    const typed = window.prompt(
-      "Enabling deletion propagation: deleting an item in Immich will move the " +
-        "matching item in Google Photos to trash, where it stays recoverable for " +
-        "60 days.\n\n" +
-        `Type "${DELETIONS_ENABLE_PHRASE}" to confirm:`,
-    );
-    if (typed === DELETIONS_ENABLE_PHRASE) {
-      confirmedPhrase = typed;
+    const confirmed = await igp.confirmPhrase({
+      title: "Enable deletion propagation",
+      body:
+        "Deleting an item in Immich will move the matching item in Google Photos to " +
+        "trash, where it stays recoverable for 60 days.",
+      phrase: DELETIONS_ENABLE_PHRASE,
+    });
+    if (confirmed) {
+      confirmedPhrase = DELETIONS_ENABLE_PHRASE;
     } else {
       confirmedPhrase = null;
       form.deletions_enabled.checked = false;
+      updateDeletionsPill();
     }
   });
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const body = {
-      quality: form.quality.value,
-      albums_enabled: form.albums_enabled.checked,
-      deletions_enabled: form.deletions_enabled.checked,
-      worker_threads: Number(form.worker_threads.value),
-      bandwidth_bytes_per_second: form.bandwidth_bytes_per_second.value
-        ? Number(form.bandwidth_bytes_per_second.value)
-        : null,
-    };
-    if (form.deletions_enabled.checked && !deletionsEnabledAtLoad) {
-      body.confirm_deletions = confirmedPhrase || "";
+    clearErrors();
+    submitButton.disabled = true;
+    submitButton.classList.add("is-busy");
+    try {
+      const body = {
+        quality: form.quality.value,
+        albums_enabled: form.albums_enabled.checked,
+        deletions_enabled: form.deletions_enabled.checked,
+        worker_threads: Number(form.worker_threads.value),
+        bandwidth_bytes_per_second: form.bandwidth_bytes_per_second.value
+          ? Number(form.bandwidth_bytes_per_second.value)
+          : null,
+      };
+      if (form.deletions_enabled.checked && !deletionsEnabledAtLoad) {
+        body.confirm_deletions = confirmedPhrase || "";
+      }
+      const response = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        const message = (data && data.detail) || "Settings update failed.";
+        formError.textContent = message;
+        formError.hidden = false;
+        if (form.deletions_enabled.checked && !deletionsEnabledAtLoad) {
+          deletionsError.textContent = message;
+          deletionsError.hidden = false;
+        }
+        igp.toast(message, { tone: "danger" });
+        return;
+      }
+      igp.toast("Settings saved.");
+      await load();
+    } finally {
+      submitButton.disabled = false;
+      submitButton.classList.remove("is-busy");
     }
-    const response = await fetch("/api/settings", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      alert((data && data.detail) || "settings update failed");
-    }
-    load();
   });
 
   load();
