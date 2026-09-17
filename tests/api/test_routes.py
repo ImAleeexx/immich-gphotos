@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -48,6 +50,7 @@ def rig(tmp_path):
         runtime=StubRuntime(),
         settings=Settings(),
         webhook_secret="s",
+        clock=clock,
     )
     # Task 20 adds a session-protected middleware ahead of these routes; log
     # in once here so the pre-existing Task 19 tests keep exercising the same
@@ -102,6 +105,18 @@ def test_retrying_an_unknown_asset_is_404(rig):
     assert http.post("/api/failures/nope/retry").status_code == 404
 
 
+def test_retrying_a_non_quarantined_asset_is_404_and_leaves_it_unchanged(rig):
+    http, assets, _ = rig
+    assets.upsert_pending(asset("a"), Priority.WEBHOOK)
+    assets.claim_next(limit=1)
+    assets.mark_synced("a", "k", Outcome.ALREADY_PRESENT)
+
+    assert http.post("/api/failures/a/retry").status_code == 404
+    stored = assets.get("a")
+    assert stored.state is AssetState.SYNCED
+    assert stored.attempts == 0
+
+
 def test_settings_roundtrip(rig):
     http, _, _ = rig
     response = http.put("/api/settings", json={"quality": "saver", "albums_enabled": False})
@@ -121,4 +136,7 @@ def test_event_stream_emits_a_status_frame(rig):
     with http.stream("GET", "/events?max_events=1") as response:
         assert response.headers["content-type"].startswith("text/event-stream")
         payload = "".join(response.iter_text())
-    assert "counts" in payload
+    assert payload.startswith("data: ")
+    assert payload.endswith("\n\n")
+    frame = json.loads(payload.removeprefix("data: ").rstrip("\n"))
+    assert "counts" in frame

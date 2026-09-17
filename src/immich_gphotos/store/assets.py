@@ -221,7 +221,7 @@ class AssetRepo:
                 " error_class = NULL, last_error = NULL WHERE immich_id = ? AND state = ?",
                 (AssetState.PENDING.value, immich_id, AssetState.FAILED.value),
             )
-        return cur.rowcount > 0
+            return cur.rowcount > 0
 
     def requeue_stale_uploading(self, older_than: timedelta) -> int:
         """Recover rows a crash left claimed."""
