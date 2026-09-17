@@ -5,12 +5,12 @@ import pytest
 from immich_gphotos.clock import FakeClock
 from immich_gphotos.config import Settings
 from immich_gphotos.immich.fake import FakeImmichClient
-from immich_gphotos.immich.protocol import ImmichError
+from immich_gphotos.immich.protocol import AssetPage, ImmichError
 from immich_gphotos.models import Asset, Outcome, Priority
 from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.store.db import connect
 from immich_gphotos.store.kv import CursorRepo
-from immich_gphotos.sync.reconciler import RECONCILE_CURSOR, Reconciler
+from immich_gphotos.sync.reconciler import RECONCILE_CURSOR, Reconciler, StalledPaginationError
 
 
 def asset(i: str) -> Asset:
@@ -103,6 +103,53 @@ def test_cursor_does_not_advance_when_a_page_fails(rig):
     clock.advance(timedelta(minutes=20))
     with pytest.raises(ImmichError):
         reconciler.run_once()
+    assert cursors.get(RECONCILE_CURSOR) == planted
+
+
+def test_pagination_that_does_not_advance_raises_instead_of_looping_forever(rig):
+    """A server bug or retried response repeating a page number must not spin
+    run_once forever — it must fail loudly so the cursor never advances."""
+    assets, cursors, clock = rig
+
+    class Stuck(FakeImmichClient):
+        def search_assets(self, **kwargs):
+            page = kwargs.get("page", 1)
+            return AssetPage(assets=[asset("a")], next_page=page)
+
+    immich = Stuck(assets=[asset("a")])
+    reconciler = Reconciler(immich, assets, cursors, Settings(), clock)
+    reconciler.run_once()
+    planted = cursors.get(RECONCILE_CURSOR)
+
+    clock.advance(timedelta(minutes=20))
+    with pytest.raises(StalledPaginationError):
+        reconciler.run_once()
+    assert cursors.get(RECONCILE_CURSOR) == planted
+
+
+def test_cursor_does_not_advance_when_enqueue_fails_mid_page(rig):
+    """The failure path matters as much when it happens during enqueue as when
+    it happens during fetch: either way the cursor must not move."""
+    assets, cursors, clock = rig
+    immich = FakeImmichClient(assets=[asset("a"), asset("b")])
+    reconciler = Reconciler(immich, assets, cursors, Settings(), clock)
+    reconciler.run_once()
+    planted = cursors.get(RECONCILE_CURSOR)
+
+    class FlakyAssets:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def upsert_pending(self, asset, priority):
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("boom")
+            return True
+
+    clock.advance(timedelta(minutes=20))
+    broken = Reconciler(immich, FlakyAssets(), cursors, Settings(), clock)
+    with pytest.raises(RuntimeError):
+        broken.run_once()
     assert cursors.get(RECONCILE_CURSOR) == planted
 
 

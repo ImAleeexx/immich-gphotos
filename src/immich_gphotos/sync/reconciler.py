@@ -11,6 +11,14 @@ from immich_gphotos.store.kv import CursorRepo
 RECONCILE_CURSOR = "reconcile"
 
 
+class StalledPaginationError(Exception):
+    """Raised when Immich returns a next_page that fails to advance.
+
+    A repeated or regressed page number would otherwise spin `run_once` forever,
+    hiding the fact that the reconciler has stopped making progress.
+    """
+
+
 @dataclass(frozen=True)
 class ReconcileResult:
     scanned: int = 0
@@ -55,6 +63,7 @@ class Reconciler:
         page: int | None = 1
 
         while page is not None:
+            requested_page = page
             result = self._immich.search_assets(
                 updated_after=updated_after,
                 page=page,
@@ -67,6 +76,11 @@ class Reconciler:
                 if self._assets.upsert_pending(asset, Priority.RECONCILE):
                     enqueued += 1
             page = result.next_page
+            if page is not None and page <= requested_page:
+                raise StalledPaginationError(
+                    f"reconciler pagination did not advance: page {requested_page} was"
+                    f" followed by next_page {page}"
+                )
 
         self._cursors.set(RECONCILE_CURSOR, started.isoformat())
         return ReconcileResult(scanned=scanned, enqueued=enqueued, pages=pages)
