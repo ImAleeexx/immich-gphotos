@@ -50,3 +50,19 @@ def test_quota_markers_take_priority_over_auth_markers():
 
 def test_auth_and_transient_markers_together_still_classify_auth_invalid():
     assert classify_gpmc_error(Exception("401 error, connection reset")) is ErrorClass.AUTH_INVALID
+
+
+def test_a_keyerror_from_a_missing_auth_field_classifies_as_auth_invalid():
+    """Live evidence: given a structurally valid but dead/revoked credential,
+    gpmc raises KeyError('oauth2_foreground') while renewing the auth token.
+    str(KeyError('x')) is "'x'" WITH quotes, not a clean substring — write
+    against real behaviour, not an assumption."""
+    exc = KeyError("oauth2_foreground")
+    assert str(exc) == "'oauth2_foreground'"
+    assert classify_gpmc_error(exc) is ErrorClass.AUTH_INVALID
+
+
+def test_a_missing_email_field_classifies_as_auth_invalid():
+    """Live evidence: a malformed stored credential makes gpmc's Client
+    constructor raise `ValueError: No email value in auth_data`."""
+    assert classify_gpmc_error(ValueError("No email value in auth_data")) is ErrorClass.AUTH_INVALID

@@ -1,6 +1,7 @@
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 import requests.exceptions
 
@@ -10,7 +11,16 @@ from immich_gphotos.models import ErrorClass
 
 ALBUM_BATCH = 500
 
-_AUTH_MARKERS = ("401", "forbidden", "unauthorized", "auth token", "auth_data", "authentication")
+_AUTH_MARKERS = (
+    "401",
+    "forbidden",
+    "unauthorized",
+    "auth token",
+    "auth_data",
+    "authentication",
+    "oauth2",
+    "no email value",
+)
 _RATE_MARKERS = ("429", "rate limit", "too many requests")
 _QUOTA_MARKERS = ("quota", "storage full", "out of space")
 _TRANSIENT_MARKERS = ("timed out", "timeout", "connection", "temporarily", "502", "503", "504")
@@ -71,41 +81,68 @@ class GpmcClient:
             self._local.client = existing
         return existing
 
-    def _guard(self, action: str, fn, *args, **kwargs):  # noqa: ANN001, ANN202
+    def _guard(self, action: str, fn: Callable[[Any], Any]) -> Any:  # noqa: ANN401
+        """Run `fn(client)`, acquiring the (possibly not-yet-constructed) client
+        *inside* the guarded region and classifying whatever goes wrong.
+
+        `self._client` is a property that constructs and authenticates gpmc's
+        `Client` on first use per thread. If that construction/authentication
+        step is evaluated by the caller before this try, its exceptions escape
+        the facade entirely (raw `ValueError`, `KeyError`, ...); acquiring it
+        here is what keeps every failure inside the `GPhotosError` boundary.
+
+        Construction's only job is obtaining an auth token from `auth_data`, so
+        a non-network failure there is by definition an `auth_data` problem —
+        force it to AUTH_INVALID even if the message doesn't match a marker.
+        A real connection error or timeout during that same step is a passing
+        network blip, not a bad credential, so it is left as TRANSIENT rather
+        than forced — forcing it would halt the service and demand a needless
+        re-extraction of `auth_data` from an Android device.
+        """
         try:
-            return fn(*args, **kwargs)
+            client = self._client
+        except Exception as exc:  # noqa: BLE001 - deliberately broad, then classified
+            error_class = classify_gpmc_error(exc)
+            if error_class is not ErrorClass.TRANSIENT:
+                error_class = ErrorClass.AUTH_INVALID
+            raise GPhotosError(f"authentication failed: {exc}", error_class) from exc
+
+        try:
+            return fn(client)
         except Exception as exc:  # noqa: BLE001 - deliberately broad, then classified
             raise GPhotosError(f"{action} failed: {exc}", classify_gpmc_error(exc)) from exc
 
     def exists(self, checksum: str) -> str | None:
-        return self._guard("hash lookup", self._client.get_media_key_by_hash, checksum)
+        return self._guard("hash lookup", lambda client: client.get_media_key_by_hash(checksum))
 
     def upload(self, path: Path, *, checksum: str, filename: str) -> str:
         result = self._guard(
             "upload",
-            self._client.upload,
-            target={path: {"hash": checksum, "filename": filename}},
-            use_quota=self._quality == "quota",
-            saver=self._quality == "saver",
-            show_progress=False,
-            threads=1,
+            lambda client: client.upload(
+                target={path: {"hash": checksum, "filename": filename}},
+                use_quota=self._quality == "quota",
+                saver=self._quality == "saver",
+                show_progress=False,
+                threads=1,
+            ),
         )
         if not result:
             raise GPhotosError("upload returned no media key", ErrorClass.UNKNOWN)
         return next(iter(result.values()))
 
     def create_album(self, name: str, media_keys: Sequence[str]) -> str:
-        return self._guard("album creation", self._client.api.create_album, name, list(media_keys))
+        keys = list(media_keys)
+        return self._guard("album creation", lambda client: client.api.create_album(name, keys))
 
     def add_to_album(self, album_id: str, media_keys: Sequence[str]) -> None:
         keys = list(media_keys)
         for start in range(0, len(keys), ALBUM_BATCH):
+            batch = keys[start : start + ALBUM_BATCH]
             self._guard(
                 "album update",
-                self._client.api.add_media_to_album,
-                album_id,
-                keys[start : start + ALBUM_BATCH],
+                lambda client, batch=batch: client.api.add_media_to_album(album_id, batch),
             )
 
     def trash(self, checksums: Sequence[str]) -> None:
-        self._guard("trash", self._client.move_to_trash, list(checksums))
+        keys = list(checksums)
+        self._guard("trash", lambda client: client.move_to_trash(keys))
