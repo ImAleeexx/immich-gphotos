@@ -80,12 +80,15 @@ def test_outside_the_window_hash_checks_proceed_but_transfer_defers(rig):
 
 
 def test_an_auth_failure_pauses_the_runtime(rig):
+    """worker_threads=1 (each wave holds exactly one asset) reproduces the
+    original strictly-sequential guarantee: nothing claimed behind a halted
+    asset is even started."""
     assets, events, gphotos, worker, clock, immich = rig
     gphotos.fail_on["sum-a"] = GPhotosError("401", ErrorClass.AUTH_INVALID)
     assets.upsert_pending(asset("a"), Priority.WEBHOOK)
     assets.upsert_pending(asset("b"), Priority.WEBHOOK)
 
-    runtime = Runtime(assets, worker, Settings(), clock, events, immich=immich)
+    runtime = Runtime(assets, worker, Settings(worker_threads=1), clock, events, immich=immich)
     result = runtime.tick(limit=5)
 
     assert result.halted is True
@@ -98,6 +101,51 @@ def test_an_auth_failure_pauses_the_runtime(rig):
     stranded = assets.get("b")
     assert stranded.state == AssetState.PENDING
     assert stranded.attempts == 0
+
+
+def test_a_pool_size_of_one_never_creates_a_thread_pool(rig):
+    assets, events, gphotos, worker, clock, immich = rig
+    assets.upsert_pending(asset("a"), Priority.WEBHOOK)
+    runtime = Runtime(assets, worker, Settings(worker_threads=1), clock, events, immich=immich)
+    runtime.tick(limit=5)
+    assert runtime._pool is None
+
+
+def test_pool_halts_the_batch_without_starting_undispatched_waves(rig):
+    """With a real pool (worker_threads=2), a halting asset stops any *later*
+    wave from ever being dispatched -- and that undispatched remainder is
+    requeued with no attempt burned, exactly like the sequential path.
+    Assets in the *same* wave as the halting one may legitimately have
+    already run concurrently with it; that is not "unprocessed" and must not
+    be requeued."""
+    assets, events, gphotos, worker, clock, immich = rig
+    gphotos.fail_on["sum-a"] = GPhotosError("401", ErrorClass.AUTH_INVALID)
+    for name in ("a", "b", "c", "d"):
+        assets.upsert_pending(asset(name), Priority.WEBHOOK)
+
+    runtime = Runtime(assets, worker, Settings(worker_threads=2), clock, events, immich=immich)
+    result = runtime.tick(limit=4)
+
+    assert result.halted is True
+    assert result.processed == 2  # only the first wave, [a, b], ever ran
+    assert runtime.paused_reason is not None
+
+    halted = assets.get("a")
+    assert halted.state == AssetState.PENDING
+    assert halted.attempts == 0  # not the asset's fault
+
+    # "b" shared a's wave -- both were dispatched to the pool together, and
+    # b had no configured failure, so it completed normally.
+    completed = assets.get("b")
+    assert completed.state == AssetState.SYNCED
+
+    # "c" and "d" belonged to a wave that was never dispatched at all.
+    for name in ("c", "d"):
+        stranded = assets.get(name)
+        assert stranded.state == AssetState.PENDING
+        assert stranded.attempts == 0
+
+    runtime.close()
 
 
 def test_a_paused_runtime_does_no_work_until_resumed(rig):

@@ -124,3 +124,27 @@ def test_rebuild_without_a_loops_handle_still_updates_services(tmp_path):
     rebuild_runtime(services, settings=Settings(quality="saver"))
 
     assert services.settings.quality == "saver"
+
+
+def test_rebuild_closes_the_outgoing_runtimes_worker_pool(tmp_path):
+    """A Runtime with worker_threads > 1 may own a lazily-created thread
+    pool. Swapping in a new Runtime on a settings change must not leak that
+    pool's threads -- rebuild_runtime closes the outgoing one."""
+    services = build(tmp_path, settings=Settings(worker_threads=2))
+    old_runtime = services.runtime
+    old_runtime._executor()  # force the pool into existence, as a real tick would
+    assert old_runtime._pool is not None
+
+    closed = []
+    original_close = old_runtime.close
+
+    def spy_close():
+        closed.append(True)
+        original_close()
+
+    old_runtime.close = spy_close
+
+    rebuild_runtime(services, settings=Settings(worker_threads=3))
+
+    assert closed == [True]
+    assert services.runtime is not old_runtime

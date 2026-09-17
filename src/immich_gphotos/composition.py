@@ -98,6 +98,7 @@ def rebuild_runtime(
     immich = immich if immich is not None else services.immich
     gphotos = gphotos if gphotos is not None else services.gphotos
     settings = settings if settings is not None else services.settings
+    old_runtime = services.runtime
 
     runtime, backfill, loops = build_runtime_graph(
         immich=immich,
@@ -119,3 +120,12 @@ def rebuild_runtime(
     services.backfill = backfill
     if services.loops_handle is not None:
         services.loops_handle.replace(loops)
+
+    # A real Runtime may own a worker-thread pool (see Runtime.close); shut
+    # the outgoing one down so pool threads do not leak on every settings
+    # save. getattr rather than a direct call: test doubles standing in for
+    # `services.runtime` (StubRuntime and friends) carry no pool and no
+    # close() to call.
+    close = getattr(old_runtime, "close", None)
+    if close is not None:
+        close()
