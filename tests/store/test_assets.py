@@ -74,9 +74,11 @@ def test_concurrent_upsert_same_id_does_not_raise(repo):
     asset_id = "concurrent_asset"
     exceptions = []
     results = []
+    barrier = threading.Barrier(5)  # Synchronize 5 threads
 
     def upsert_with_priority(priority):
         try:
+            barrier.wait()  # Ensure all threads start at roughly the same time
             result = r.upsert_pending(make_asset(asset_id), priority)
             results.append(result)
         except Exception as e:
@@ -103,6 +105,29 @@ def test_concurrent_upsert_same_id_does_not_raise(repo):
     assert stored is not None
     assert stored.asset.immich_id == asset_id
     assert stored.priority == Priority.WEBHOOK
+
+
+def test_terminal_row_priority_is_not_downgraded(repo):
+    """A synced row's priority must be preserved when re-upserted at lower priority.
+
+    This regression test catches the case where the CASE WHEN state check
+    uses the wrong case (uppercase vs lowercase) or omits terminal states.
+    """
+    r, _ = repo
+    # Insert at BACKFILL priority (2)
+    r.upsert_pending(make_asset(), Priority.BACKFILL)
+    r.claim_next(limit=1)
+    r.mark_synced("a1", "mediakey1", Outcome.UPLOADED)
+    assert r.get("a1").priority is Priority.BACKFILL
+
+    # Try to re-upsert at WEBHOOK priority (0, lower/higher priority)
+    # Should return False (terminal) and NOT change priority
+    result = r.upsert_pending(make_asset(), Priority.WEBHOOK)
+    assert result is False
+
+    stored = r.get("a1")
+    assert stored.state is AssetState.SYNCED
+    assert stored.priority is Priority.BACKFILL  # Priority must not change
 
 
 def test_upsert_skips_assets_already_terminal(repo):
