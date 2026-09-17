@@ -44,8 +44,17 @@ def create_app(services: Services) -> FastAPI:
 
     @app.exception_handler(404)
     async def render_not_found(request: Request, exc) -> Response:
-        """A browser hitting an unknown path got FastAPI's raw JSON body. API
-        clients still should -- only navigations get the rendered page."""
+        """Starlette dispatches an HTTPException by status code before it
+        ever looks at the exception type, so this handler sees every
+        HTTPException(404) raised anywhere in the app -- not just the
+        "no route matched" case. A route that deliberately raises its own
+        404 with a specific detail (e.g. POST /api/failures/{id}/retry) must
+        keep that detail; only Starlette's own unmatched-route 404, which
+        always carries the default detail "Not Found", gets the branded
+        HTML-vs-JSON treatment below.
+        """
+        if exc.detail != "Not Found":
+            return JSONResponse({"detail": exc.detail}, status_code=404)
         if request.url.path.startswith("/api") or "text/html" not in request.headers.get("accept", ""):
             return JSONResponse({"detail": "not found"}, status_code=404)
         return pages.render_not_found(request)

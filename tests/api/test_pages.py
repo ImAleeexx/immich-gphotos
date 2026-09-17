@@ -47,3 +47,12 @@ def test_an_unknown_api_path_still_returns_json(http):
     response = http.get("/api/no-such-thing", headers={"accept": "text/html"})
     assert response.status_code == 404
     assert response.json() == {"detail": "not found"}
+
+
+def test_a_routes_own_404_detail_survives_the_global_handler(http):
+    """POST /api/failures/<unknown-id>/retry raises its own HTTPException(404,
+    detail=...). The global 404 handler must not clobber that specific
+    message with the generic "not found" meant only for unmatched routes."""
+    response = http.post("/api/failures/no-such-asset/retry")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "no quarantined asset with that id"}
