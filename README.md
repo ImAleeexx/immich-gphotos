@@ -125,9 +125,11 @@ Settings changed later take effect immediately — no restart.
 | **Albums** | Mirror Immich albums into Google Photos. |
 | **Deletions** | Propagate deletions to Google's trash. Off by default — see below. |
 | **Worker threads** | How many uploads run concurrently. |
-| **Bandwidth cap** | Upload throughput limit for metered or shared connections. Leave blank for no limit. |
+| **Bandwidth cap** | Upload throughput limit for metered or shared connections. Leave blank for no limit. Shapes long-run average throughput, not the instantaneous rate — see below. |
 
 Schedule window, content filters (size caps, RAW, tags, album allowlist) and retry behaviour exist in the engine — the engine correctly gates transfer on a configured window and applies sensible defaults for the rest — but are not yet exposed for editing in this release.
+
+**What the bandwidth cap actually limits.** Each upload waits out its share of the configured rate before that file's bytes move, then the transfer itself runs unthrottled — so the cap holds the average bytes-per-second across uploads to the configured rate, but does not meter the instantaneous rate during any single transfer, which can briefly saturate the link while it runs. A wait long enough to freeze the background loop for an appreciable time (a low cap against a large file) is not slept out inline: the upload is deferred and retried once that wait has elapsed, so the loop's other work — reconcile, backfill, album sync, the deletion sweep — is never blocked on it.
 
 ## Deletions
 

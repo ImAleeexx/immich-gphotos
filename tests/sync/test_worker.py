@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -13,7 +13,7 @@ from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.store.db import connect
 from immich_gphotos.sync.bytes import ByteResolver
 from immich_gphotos.sync.throttle import TokenBucket
-from immich_gphotos.sync.worker import THROTTLE_SLEEP_CHUNK_SECONDS, Worker
+from immich_gphotos.sync.worker import MAX_INLINE_THROTTLE_WAIT_SECONDS, Worker
 
 ASSET = Asset(
     immich_id="a1",
@@ -206,22 +206,19 @@ def test_bandwidth_cap_shared_across_calls_drains_the_same_bucket(tmp_path):
     assert sleeps == [0.2]
 
 
-def test_a_large_upload_under_a_tiny_cap_sleeps_the_full_wait_in_bounded_chunks(tmp_path):
-    """The throttle cap must be honoured, not silently violated: an earlier
-    version of this fix bounded any single sleep to 30s by truncating the
-    wait outright, which meant TokenBucket still deducted the full token
-    cost while the caller waited only a fraction of it -- so a large upload
-    under a low cap finished, and the next one started, faster than the
-    configured rate actually allows.
+def test_a_large_upload_under_a_tiny_cap_defers_instead_of_freezing_the_loop(tmp_path):
+    """A wait at or above MAX_INLINE_THROTTLE_WAIT_SECONDS must never be slept
+    out on the calling thread -- for a background-loop tick, that thread is
+    the only one driving reconcile, backfill, album sync, the deletion sweep,
+    requeue_stale_uploading and the pause-retry, so sleeping here would freeze
+    all of them for the wait's whole duration (hours, at the documented
+    bandwidth minimum, for a large file).
 
-    _throttle_upload now sleeps the *entire* wait `TokenBucket.take` hands
-    back, just broken into chunks of at most THROTTLE_SLEEP_CHUNK_SECONDS so
-    no single `time.sleep` call is asked for a pathological duration.
     Uncapped, 5,000,000 bytes at 1 byte/second is a ~58-day wait -- proving
-    the chunking here, independent of the API-level guard
+    the defer path is taken, independent of the API-level guard
     (MIN_BANDWIDTH_BYTES_PER_SECOND) that keeps a rate this low from being
     configurable through the API in the first place; TokenBucket itself is
-    still constructed directly with it below."""
+    still constructed directly with it here."""
     clock = FakeClock()
     assets = AssetRepo(connect(tmp_path / "t.db"), clock)
     content = b"x" * 5_000_000
@@ -246,7 +243,85 @@ def test_a_large_upload_under_a_tiny_cap_sleeps_the_full_wait_in_bounded_chunks(
 
     result = worker.process(claim(assets, replace(ASSET, size_bytes=len(content))))
 
+    assert result.state is AssetState.PENDING
+    assert result.deferred is True
+    assert sleeps == []  # never slept on the calling thread
+    assert gphotos.uploads == []  # not uploaded yet
+    stored = assets.get("a1")
+    assert stored.attempts == 0  # not the asset's fault, no attempt burned
+    assert stored.next_attempt_at == (clock.now() + timedelta(seconds=expected_wait)).isoformat()
+
+
+def test_a_deferred_upload_is_not_metered_twice_on_retry(tmp_path):
+    """The bucket is charged exactly once for a given transfer -- at the call
+    that decided to defer, not again when the asset is reclaimed. Re-metering
+    on retry would double-charge the same bytes, and since a TokenBucket's
+    capacity never exceeds one second's worth of tokens, that second charge
+    would recreate almost the same enormous wait on every subsequent retry --
+    the asset would never actually upload."""
+    clock = FakeClock()
+    assets = AssetRepo(connect(tmp_path / "t.db"), clock)
+    content = b"x" * 5_000_000
+    immich = FakeImmichClient(contents={"a1": content})
+    gphotos = FakeGooglePhotosClient()
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    bucket = TokenBucket(rate_bytes_per_second=1, clock=clock)
+    sleeps: list[float] = []
+    worker = Worker(
+        assets,
+        gphotos,
+        resolver,
+        Filters(),
+        RetryPolicy(jitter=0.0),
+        clock,
+        bandwidth=bucket,
+        sleep=sleeps.append,
+    )
+
+    first = worker.process(claim(assets, replace(ASSET, size_bytes=len(content))))
+    assert first.deferred is True
+    stored = assets.get("a1")
+    wait_seconds = (datetime.fromisoformat(stored.next_attempt_at) - clock.now()).total_seconds()
+    clock.advance(timedelta(seconds=wait_seconds))
+
+    reclaimed = assets.claim_next(limit=1)[0]
+    result = worker.process(reclaimed)
+
     assert result.state is AssetState.SYNCED
-    assert len(sleeps) > 1  # chunked, not one giant call
-    assert all(chunk <= THROTTLE_SLEEP_CHUNK_SECONDS for chunk in sleeps)
-    assert sum(sleeps) == pytest.approx(expected_wait)  # the full wait is honoured
+    assert sleeps == []  # the wait already elapsed via the requeue, not a sleep
+    assert gphotos.uploads == [("sum-a", "IMG_1.JPG")]
+
+
+def test_wait_just_under_the_bound_still_sleeps_inline(tmp_path):
+    """A wait comfortably below MAX_INLINE_THROTTLE_WAIT_SECONDS is still
+    slept out inline, in a single call, rather than deferred -- deferring
+    every capped upload, however small the wait, would mean a modest cap
+    never actually uploads anything on the first pass."""
+    clock = FakeClock()
+    assets = AssetRepo(connect(tmp_path / "t.db"), clock)
+    rate = 100
+    # 100 bytes/sec bucket starts full (100 tokens): the first 100 bytes are
+    # free, so 2900 bytes costs (2900 - 100) / 100 == 28.0s -- comfortably
+    # under the 30s bound.
+    content = b"x" * 2900
+    immich = FakeImmichClient(contents={"a1": content})
+    gphotos = FakeGooglePhotosClient()
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    bucket = TokenBucket(rate_bytes_per_second=rate, clock=clock)
+    sleeps: list[float] = []
+    worker = Worker(
+        assets,
+        gphotos,
+        resolver,
+        Filters(),
+        RetryPolicy(jitter=0.0),
+        clock,
+        bandwidth=bucket,
+        sleep=sleeps.append,
+    )
+
+    result = worker.process(claim(assets, replace(ASSET, size_bytes=len(content))))
+
+    assert result.state is AssetState.SYNCED
+    assert sleeps == [28.0]
+    assert sleeps[0] < MAX_INLINE_THROTTLE_WAIT_SECONDS

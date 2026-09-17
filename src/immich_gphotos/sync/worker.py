@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -24,20 +25,21 @@ HALT_RETRY_DELAY = timedelta(minutes=10)
 # window reopens or is widened.
 WINDOW_RETRY_DELAY = timedelta(minutes=15)
 
-# `_throttle_upload` sleeps the *full* wait `TokenBucket.take` hands back --
-# it does not truncate it -- so the configured bandwidth cap is actually
-# honoured rather than silently exceeded on a large file. It sleeps that wait
-# in chunks of at most this many seconds rather than one single `time.sleep`
-# call, purely so no single call blocks for a pathological duration; the
-# total time slept is unchanged either way; see the loop in
-# `_throttle_upload`. What actually keeps a wedged loop unreachable from any
-# setting value is bounding the *rate* at the API boundary --
-# `api.routes.MIN_BANDWIDTH_BYTES_PER_SECOND` -- not truncating the wait
-# computed from it: a cap low enough to need truncating was already too low
-# to be a real bandwidth cap rather than an effectively-infinite stall. 30s
-# is well under every other timer in this module (WINDOW_RETRY_DELAY,
-# HALT_RETRY_DELAY) and IDLE_SLEEP_SECONDS.
-THROTTLE_SLEEP_CHUNK_SECONDS = 30.0
+# The most `_throttle_upload` will ever block the calling thread for. Below
+# this, the wait is short enough that sleeping right here -- on whatever
+# thread called `process()`, which for the single background-loop tick is
+# the *only* thread driving reconcile, backfill, album sync, the deletion
+# sweep, requeue_stale_uploading and the pause-retry -- is a tolerable,
+# bounded delay. At or above it, that same thread would otherwise be frozen
+# for as long as the configured bandwidth cap and this file's size imply --
+# up to hours at the documented minimum, `MIN_BANDWIDTH_BYTES_PER_SECOND` in
+# `api.routes` -- so the wait is paid by requeuing the asset for `now + wait`
+# instead (see the `deferred` branch in `_throttle_upload`), the same
+# mechanism the schedule-window path above already uses. 30s is well under
+# every other timer in this module (WINDOW_RETRY_DELAY, HALT_RETRY_DELAY)
+# and a small multiple of IDLE_SLEEP_SECONDS, so it costs at most a handful
+# of idle ticks' worth of responsiveness for any wait that clears it.
+MAX_INLINE_THROTTLE_WAIT_SECONDS = 30.0
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,20 @@ class Worker:
         # Injectable so tests can drive the wait with a FakeClock and assert
         # on it without a real sleep; production uses the real time.sleep.
         self._sleep = sleep
+        # Ids for which a previous call already charged the bucket (via
+        # `TokenBucket.take`) but deferred rather than sleeping out the
+        # result -- see `_throttle_upload`. When such an asset is reclaimed,
+        # metering it again would charge the same bytes against the bucket
+        # twice for a transfer that has only ever happened once; since the
+        # bucket's capacity never exceeds one second's worth of tokens, that
+        # second charge would recreate nearly the same wait on every
+        # subsequent retry and the asset would never actually upload. This
+        # is in-memory only, same as the bucket itself -- lost on restart,
+        # which just re-meters the asset fresh from a newly-full bucket
+        # rather than double-charging a debt no longer tracked, a fine
+        # degradation and not a correctness bug.
+        self._throttle_prepaid: set[str] = set()
+        self._throttle_prepaid_lock = threading.Lock()
 
     def process(
         self,
@@ -139,7 +155,23 @@ class Worker:
 
             resolved = self._resolver.resolve(asset)
             try:
-                self._throttle_upload(resolved.path)
+                defer_wait = self._throttle_upload(asset.immich_id, resolved.path)
+                if defer_wait is not None:
+                    # The bandwidth cap would otherwise block this thread for
+                    # longer than MAX_INLINE_THROTTLE_WAIT_SECONDS -- see
+                    # `_throttle_upload`. Hand it back to the queue instead of
+                    # sleeping on it, the same way the schedule-window branch
+                    # above does; not the asset's fault, so no attempt is
+                    # burned. The bucket has already been charged for this
+                    # transfer (`_throttle_prepaid` remembers that), so the
+                    # retry that reclaims it after `defer_wait` must not be
+                    # metered again.
+                    self._assets.requeue(asset.immich_id, self._clock.now() + timedelta(seconds=defer_wait))
+                    return WorkerResult(
+                        AssetState.PENDING,
+                        reason="deferred: bandwidth cap would block the loop too long",
+                        deferred=True,
+                    )
                 media_key = self._gphotos.upload(
                     resolved.path, checksum=asset.checksum, filename=asset.filename
                 )
@@ -159,8 +191,10 @@ class Worker:
             logger.exception("unexpected error processing asset %s", asset.immich_id)
             return self._handle_failure(stored, ErrorClass.UNKNOWN, str(exc))
 
-    def _throttle_upload(self, path: Path) -> None:
-        """Make the caller wait its share of the configured upload bandwidth cap.
+    def _throttle_upload(self, immich_id: str, path: Path) -> float | None:
+        """Make the caller wait its share of the configured upload bandwidth cap,
+        or say how long the *asset* should wait instead, when that share is
+        too long for this thread to sleep on.
 
         Only the upload leg is metered, not the download/resolve leg: the cap
         is documented (and read back from the API) as "cap on upload
@@ -174,25 +208,39 @@ class Worker:
         No bucket configured (`self._bandwidth is None`, i.e. no cap) takes
         this branch and returns immediately -- no lock, no clock call, no
         stat() -- so an unconfigured cap adds no overhead.
+
+        Returns `None` when the caller may proceed with the upload right
+        away (no cap, a wait it already slept out inline, or an asset whose
+        debt was already paid by an earlier call -- see `_throttle_prepaid`
+        on `__init__`). Returns the number of seconds the caller should defer
+        the asset by instead of sleeping, when the computed wait is at or
+        above MAX_INLINE_THROTTLE_WAIT_SECONDS.
         """
         if self._bandwidth is None:
-            return
+            return None
+        with self._throttle_prepaid_lock:
+            if immich_id in self._throttle_prepaid:
+                # A previous call already charged the bucket for this exact
+                # transfer and deferred rather than sleeping; charging it
+                # again here would double-count the same bytes. Upload now,
+                # unmetered a second time -- the real wait already elapsed
+                # while this asset sat requeued.
+                self._throttle_prepaid.discard(immich_id)
+                return None
         try:
             size = path.stat().st_size
         except OSError:
             # Can't size the file (already gone, races with release, ...) --
             # never let metering itself fail the upload.
-            return
+            return None
         wait = self._bandwidth.take(size)
-        # The full wait is honoured, in chunks of at most
-        # THROTTLE_SLEEP_CHUNK_SECONDS -- see that constant. A single sleep
-        # covers the common case (wait <= the chunk size) in one call, same
-        # as before.
-        remaining = wait
-        while remaining > 0:
-            chunk = min(remaining, THROTTLE_SLEEP_CHUNK_SECONDS)
-            self._sleep(chunk)
-            remaining -= chunk
+        if wait < MAX_INLINE_THROTTLE_WAIT_SECONDS:
+            if wait > 0:
+                self._sleep(wait)
+            return None
+        with self._throttle_prepaid_lock:
+            self._throttle_prepaid.add(immich_id)
+        return wait
 
     def _handle_failure(self, stored: StoredAsset, error_class: ErrorClass, message: str) -> WorkerResult:
         asset_id = stored.asset.immich_id
