@@ -10,8 +10,30 @@ class AssetState(StrEnum):
     FAILED = "failed"
 
     def is_terminal(self) -> bool:
-        """Terminal means the reconciler will not re-enqueue it."""
+        """Terminal means the reconciler will not re-enqueue it.
+
+        This is true of every INELIGIBLE row *except* one whose
+        `ineligible_reason` is `ALBUM_EXCLUDED_REASON` -- see that constant
+        and `store.assets.AssetRepo.upsert_pending`, which is where that
+        distinction is actually enforced (this method only ever sees a
+        bare `AssetState`, not the reason, so it cannot make the
+        distinction itself).
+        """
         return self in {AssetState.SYNCED, AssetState.INELIGIBLE}
+
+
+# `sync.eligibility.check_eligibility` returns this as the ineligibility
+# reason when `filters.album_allowlist` is set and the asset is not (yet, or
+# any longer) a member of an allowed album. Album membership is mutable and
+# resolved fresh every tick, so -- unlike every other ineligibility reason --
+# this one must not stick forever the way plain INELIGIBLE otherwise does:
+# `store.assets.AssetRepo.upsert_pending` reopens a row carrying this exact
+# reason back to PENDING instead of leaving it terminal, which is what lets a
+# later webhook or reconciler pass actually re-evaluate membership. Shared
+# between the two modules (rather than each hardcoding the string "album_
+# excluded") so the producer and the one place that must special-case it can
+# never drift apart.
+ALBUM_EXCLUDED_REASON = "album_excluded"
 
 
 class Outcome(StrEnum):

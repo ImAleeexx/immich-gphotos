@@ -297,8 +297,13 @@ def test_a_paused_runtime_does_no_work_until_resumed(rig):
 
 def test_album_allowlist_is_resolved_and_enforced_per_tick(rig, tmp_path):
     """Filters.album_allowlist names Immich album ids; Runtime resolves them
-    to member asset ids via ImmichClient once per tick and the worker admits
-    only members.
+    to member asset ids via ImmichClient for any tick that claims something,
+    and the worker admits only members.
+
+    Runs two ticks with membership changing in between -- a single tick can
+    never exercise "per tick", and this doubles as the I3 regression guard:
+    ALBUM_EXCLUDED_REASON must not be terminal, or an asset added to an
+    allowed album after the fact would never be re-admitted.
 
     Built with its own Worker (rather than the `rig` one, which is fixed to
     plain `Filters()`) since the allowlist lives on `Filters`, which a real
@@ -313,15 +318,30 @@ def test_album_allowlist_is_resolved_and_enforced_per_tick(rig, tmp_path):
     resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
     worker = Worker(assets, gphotos, resolver, filters, RetryPolicy(jitter=0.0), clock)
     settings = Settings(filters=filters)
-    result = Runtime(assets, worker, settings, clock, events, immich=immich).tick(limit=5)
+    runtime = Runtime(assets, worker, settings, clock, events, immich=immich)
 
-    assert result.processed == 2
+    first = runtime.tick(limit=5)
+
+    assert first.processed == 2
     admitted = assets.get("in-album")
     assert admitted.state == AssetState.SYNCED
 
     excluded = assets.get("not-in-album")
     assert excluded.state == AssetState.INELIGIBLE
     assert excluded.ineligible_reason == "album_excluded"
+
+    # Membership changes: "not-in-album" is added to the allowed album. A
+    # webhook or reconciler pass touching this asset again -- upsert_pending
+    # -- is what reopens a soft (album_excluded) ineligibility back to
+    # PENDING; see store.assets.AssetRepo.upsert_pending.
+    immich.albums["album-1"].append("not-in-album")
+    assert assets.upsert_pending(asset("not-in-album"), Priority.WEBHOOK) is True
+
+    second = runtime.tick(limit=5)
+
+    assert second.processed == 1
+    now_admitted = assets.get("not-in-album")
+    assert now_admitted.state == AssetState.SYNCED
 
 
 def test_events_are_recorded_and_bounded(rig):

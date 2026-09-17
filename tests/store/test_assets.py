@@ -4,7 +4,7 @@ import pytest
 
 from immich_gphotos.clock import FakeClock
 from immich_gphotos.logging import Redactor
-from immich_gphotos.models import Asset, AssetState, ErrorClass, Outcome, Priority
+from immich_gphotos.models import ALBUM_EXCLUDED_REASON, Asset, AssetState, ErrorClass, Outcome, Priority
 from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.store.db import connect
 from immich_gphotos.store.kv import CursorRepo, SettingRepo
@@ -279,6 +279,47 @@ def test_ineligible_records_reason(repo):
     r.claim_next(limit=1)
     r.mark_ineligible("a1", "hidden")
     assert r.get("a1").ineligible_reason == "hidden"
+
+
+def test_upsert_reopens_an_album_excluded_ineligibility_to_pending(repo):
+    """I3: album membership is mutable and re-resolved every tick (see
+    sync.eligibility.check_eligibility), so a row marked ineligible for
+    ALBUM_EXCLUDED_REASON must not be terminal the way every other
+    ineligible_reason is. Otherwise an asset added to an allowed album after
+    the fact would never sync -- claim_next only ever claims PENDING rows,
+    and nothing else would put this row back in front of it -- and a single
+    transient Immich blip that returns a short album list would exclude
+    something permanently rather than for one tick."""
+    r, _ = repo
+    r.upsert_pending(make_asset(), Priority.BACKFILL)
+    r.claim_next(limit=1)
+    r.mark_ineligible("a1", ALBUM_EXCLUDED_REASON)
+
+    result = r.upsert_pending(make_asset(), Priority.WEBHOOK)
+
+    assert result is True  # reopened, not skipped as already terminal
+    stored = r.get("a1")
+    assert stored.state is AssetState.PENDING
+    assert stored.ineligible_reason is None
+    assert stored.priority is Priority.WEBHOOK  # MIN(BACKFILL, WEBHOOK) == WEBHOOK, like any non-terminal row
+
+
+def test_upsert_leaves_a_genuinely_terminal_ineligibility_alone(repo):
+    """Only ALBUM_EXCLUDED_REASON is special-cased -- every other
+    ineligible_reason (hidden, trashed, offline, type_excluded, too_large,
+    raw, tag_excluded, archived) stays exactly as terminal as before."""
+    r, _ = repo
+    r.upsert_pending(make_asset(), Priority.BACKFILL)
+    r.claim_next(limit=1)
+    r.mark_ineligible("a1", "hidden")
+
+    result = r.upsert_pending(make_asset(), Priority.WEBHOOK)
+
+    assert result is False  # still terminal
+    stored = r.get("a1")
+    assert stored.state is AssetState.INELIGIBLE
+    assert stored.ineligible_reason == "hidden"
+    assert stored.priority is Priority.BACKFILL  # unchanged
 
 
 def test_counts_by_state(repo):

@@ -5,7 +5,15 @@ from datetime import datetime, timedelta
 
 from immich_gphotos.clock import Clock
 from immich_gphotos.logging import Redactor
-from immich_gphotos.models import Asset, AssetState, ErrorClass, Outcome, Priority, StoredAsset
+from immich_gphotos.models import (
+    ALBUM_EXCLUDED_REASON,
+    Asset,
+    AssetState,
+    ErrorClass,
+    Outcome,
+    Priority,
+    StoredAsset,
+)
 
 
 def _row_to_stored(row: sqlite3.Row) -> StoredAsset:
@@ -52,6 +60,18 @@ class AssetRepo:
 
         Never downgrades an existing priority: a webhook arriving for an asset the
         backfill already queued must jump the queue, not sink into it.
+
+        Every terminal state (SYNCED, or INELIGIBLE for any reason except
+        `ALBUM_EXCLUDED_REASON`) is otherwise left exactly as found -- this
+        call never resurrects a row a previous pass decided was done or
+        permanently ineligible. `ALBUM_EXCLUDED_REASON` is the one exception:
+        album membership is mutable and re-resolved every tick (see
+        `sync.eligibility.check_eligibility`), so a row parked there is
+        reopened back to PENDING (and re-prioritized like any other
+        non-terminal row) instead of staying stuck. Without this, a webhook
+        or reconciler pass touching the row again would have no effect --
+        `claim_next` only ever claims PENDING rows -- and an asset added to
+        an allowed album after the fact would never sync.
         """
         now = self._clock.now().isoformat()
         with self._conn.lock:
@@ -61,10 +81,18 @@ class AssetRepo:
                 " state, priority, first_seen_at)"
                 " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(immich_id) DO UPDATE SET"
-                "  state = state,"
+                "  state = CASE"
+                "    WHEN state = ? AND ineligible_reason = ? THEN ?"
+                "    ELSE state"
+                "  END,"
                 "  priority = CASE"
-                "    WHEN state IN (?, ?) THEN priority"
+                "    WHEN state = ? THEN priority"
+                "    WHEN state = ? AND ineligible_reason != ? THEN priority"
                 "    ELSE MIN(priority, excluded.priority)"
+                "  END,"
+                "  ineligible_reason = CASE"
+                "    WHEN state = ? AND ineligible_reason = ? THEN NULL"
+                "    ELSE ineligible_reason"
                 "  END,"
                 "  is_trashed = excluded.is_trashed,"
                 "  visibility = excluded.visibility,"
@@ -87,8 +115,22 @@ class AssetRepo:
                     AssetState.PENDING.value,
                     int(priority),
                     now,
+                    # state CASE: reopen a soft (album_excluded) ineligibility.
+                    AssetState.INELIGIBLE.value,
+                    ALBUM_EXCLUDED_REASON,
+                    AssetState.PENDING.value,
+                    # priority CASE: SYNCED keeps its priority unconditionally;
+                    # INELIGIBLE keeps it only for a genuinely terminal reason.
+                    # A reopened album_excluded row falls through to the
+                    # MIN(...) branch like any other non-terminal row.
                     AssetState.SYNCED.value,
                     AssetState.INELIGIBLE.value,
+                    ALBUM_EXCLUDED_REASON,
+                    # ineligible_reason CASE: clear it along with the reopen
+                    # above, so a row back in PENDING does not keep showing a
+                    # stale reason it no longer has.
+                    AssetState.INELIGIBLE.value,
+                    ALBUM_EXCLUDED_REASON,
                 ),
             ).fetchone()
         return not AssetState(row["state"]).is_terminal()

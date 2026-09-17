@@ -1,5 +1,5 @@
 from immich_gphotos.config import Filters
-from immich_gphotos.models import Asset
+from immich_gphotos.models import ALBUM_EXCLUDED_REASON, Asset
 
 RAW_EXTENSIONS = frozenset(
     {
@@ -36,11 +36,17 @@ def check_eligibility(
     set. `Asset` carries no album membership of its own -- `filters.
     album_allowlist` names Immich album ids, and the caller (`Runtime.tick`,
     which already has an `ImmichClient`) resolves those ids to the set of
-    member asset ids once per tick via `ImmichClient.album_asset_ids` and
-    hands the result in here. A configured allowlist with no membership
-    information supplied (`None`) fails closed -- nothing is admitted --
-    rather than silently syncing everything, since that would defeat the
-    point of an allowlist.
+    member asset ids for any tick that actually claims something, via
+    `ImmichClient.album_asset_ids`, and hands the result in here. A
+    configured allowlist with no membership information supplied (`None`)
+    fails closed -- nothing is admitted -- rather than silently syncing
+    everything, since that would defeat the point of an allowlist. That
+    fail-closed direction is safe to take here specifically because
+    `ALBUM_EXCLUDED_REASON` is not terminal (see `models.AssetState.
+    is_terminal` and `store.assets.AssetRepo.upsert_pending`): a resolution
+    that is missing or wrong for one tick -- a transient Immich blip, or an
+    asset that just has not been added to the album yet -- excludes for now,
+    not forever.
     """
     if asset.visibility not in SYNCABLE_VISIBILITY:
         return asset.visibility
@@ -65,5 +71,5 @@ def check_eligibility(
     if filters.excluded_tags and set(asset.tags) & filters.excluded_tags:
         return "tag_excluded"
     if filters.album_allowlist and asset.immich_id not in (album_allowlist_ids or frozenset()):
-        return "album_excluded"
+        return ALBUM_EXCLUDED_REASON
     return None
