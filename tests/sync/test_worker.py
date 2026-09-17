@@ -13,7 +13,7 @@ from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.store.db import connect
 from immich_gphotos.sync.bytes import ByteResolver
 from immich_gphotos.sync.throttle import TokenBucket
-from immich_gphotos.sync.worker import MAX_THROTTLE_WAIT_SECONDS, Worker
+from immich_gphotos.sync.worker import THROTTLE_SLEEP_CHUNK_SECONDS, Worker
 
 ASSET = Asset(
     immich_id="a1",
@@ -206,12 +206,22 @@ def test_bandwidth_cap_shared_across_calls_drains_the_same_bucket(tmp_path):
     assert sleeps == [0.2]
 
 
-def test_a_large_upload_under_a_tiny_cap_cannot_produce_an_unbounded_sleep(tmp_path):
-    """C2: a validly low (but nonzero, e.g. after 0 is rejected at the API)
-    bandwidth cap must still never be able to wedge the single
-    background-loop thread. Uncapped, 5,000,000 bytes at 1 byte/second would
-    ask time.sleep for ~58 days; _throttle_upload must bound that regardless
-    of what TokenBucket.take returns."""
+def test_a_large_upload_under_a_tiny_cap_sleeps_the_full_wait_in_bounded_chunks(tmp_path):
+    """The throttle cap must be honoured, not silently violated: an earlier
+    version of this fix bounded any single sleep to 30s by truncating the
+    wait outright, which meant TokenBucket still deducted the full token
+    cost while the caller waited only a fraction of it -- so a large upload
+    under a low cap finished, and the next one started, faster than the
+    configured rate actually allows.
+
+    _throttle_upload now sleeps the *entire* wait `TokenBucket.take` hands
+    back, just broken into chunks of at most THROTTLE_SLEEP_CHUNK_SECONDS so
+    no single `time.sleep` call is asked for a pathological duration.
+    Uncapped, 5,000,000 bytes at 1 byte/second is a ~58-day wait -- proving
+    the chunking here, independent of the API-level guard
+    (MIN_BANDWIDTH_BYTES_PER_SECOND) that keeps a rate this low from being
+    configurable through the API in the first place; TokenBucket itself is
+    still constructed directly with it below."""
     clock = FakeClock()
     assets = AssetRepo(connect(tmp_path / "t.db"), clock)
     content = b"x" * 5_000_000
@@ -219,7 +229,8 @@ def test_a_large_upload_under_a_tiny_cap_cannot_produce_an_unbounded_sleep(tmp_p
     gphotos = FakeGooglePhotosClient()
     resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
     bucket = TokenBucket(rate_bytes_per_second=1, clock=clock)
-    assert bucket.take(len(content)) > 1_000_000  # the raw, uncapped wait is enormous
+    expected_wait = bucket.take(len(content))
+    assert expected_wait > 1_000_000  # the raw, uncapped wait is enormous
     bucket = TokenBucket(rate_bytes_per_second=1, clock=clock)  # fresh, undrained bucket
     sleeps: list[float] = []
     worker = Worker(
@@ -236,4 +247,6 @@ def test_a_large_upload_under_a_tiny_cap_cannot_produce_an_unbounded_sleep(tmp_p
     result = worker.process(claim(assets, replace(ASSET, size_bytes=len(content))))
 
     assert result.state is AssetState.SYNCED
-    assert sleeps == [MAX_THROTTLE_WAIT_SECONDS]
+    assert len(sleeps) > 1  # chunked, not one giant call
+    assert all(chunk <= THROTTLE_SLEEP_CHUNK_SECONDS for chunk in sleeps)
+    assert sum(sleeps) == pytest.approx(expected_wait)  # the full wait is honoured

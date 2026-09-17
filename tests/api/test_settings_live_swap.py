@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from immich_gphotos.api.app import create_app
 from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
-from immich_gphotos.api.routes import DELETIONS_ENABLE_PHRASE
+from immich_gphotos.api.routes import DELETIONS_ENABLE_PHRASE, MIN_BANDWIDTH_BYTES_PER_SECOND
 from immich_gphotos.gphotos.client import GpmcClient
 from immich_gphotos.main import build_services
 from immich_gphotos.storage_keys import GOOGLE_AUTH_KEY
@@ -110,16 +110,24 @@ def test_settings_page_no_longer_invites_zero_as_a_bandwidth_cap(tmp_path):
     exactly what invited "0 means unlimited" -- but 0 passes the (old) API
     validation and wedges the background loop for ~58 days on a single 5 MB
     upload (TokenBucket used to clamp it to 1 byte/second). The field must no
-    longer offer 0."""
+    longer offer 0, or any other value below MIN_BANDWIDTH_BYTES_PER_SECOND:
+    the throttle now honours the full configured wait rather than silently
+    truncating it (see sync.worker.THROTTLE_SLEEP_CHUNK_SECONDS), so an
+    absurdly low-but-nonzero rate is no longer just slow -- it is the only
+    thing standing between a "legitimate-looking" setting and a multi-day
+    stall of the whole background loop."""
     http, _, _ = _rig(tmp_path)
 
     settings_page = http.get("/settings")
     wizard_page = http.get("/wizard")
 
-    assert 'name="bandwidth_bytes_per_second" min="1"' in settings_page.text
-    assert 'name="bandwidth_bytes_per_second" min="1"' in wizard_page.text
+    expected = f'name="bandwidth_bytes_per_second" min="{MIN_BANDWIDTH_BYTES_PER_SECOND}"'
+    assert expected in settings_page.text
+    assert expected in wizard_page.text
     assert 'name="bandwidth_bytes_per_second" min="0"' not in settings_page.text
     assert 'name="bandwidth_bytes_per_second" min="0"' not in wizard_page.text
+    assert 'name="bandwidth_bytes_per_second" min="1"' not in settings_page.text
+    assert 'name="bandwidth_bytes_per_second" min="1"' not in wizard_page.text
 
 
 def test_zero_bandwidth_cap_is_rejected_by_the_api(tmp_path):
@@ -129,6 +137,22 @@ def test_zero_bandwidth_cap_is_rejected_by_the_api(tmp_path):
     http, services, _ = _rig(tmp_path)
 
     response = http.put("/api/settings", json={"bandwidth_bytes_per_second": 0})
+
+    assert response.status_code == 422
+    assert services.settings.bandwidth_bytes_per_second is None
+
+
+def test_a_pathologically_low_bandwidth_cap_is_rejected_by_the_api(tmp_path):
+    """1 byte/second passed the old `ge=1` bound but, combined with the
+    throttle now honouring its full computed wait rather than truncating it,
+    would stall the background loop for as long as the cap and file size
+    dictate. MIN_BANDWIDTH_BYTES_PER_SECOND is the guard against that -- a
+    value below it is rejected outright, the same way 0 already was."""
+    http, services, _ = _rig(tmp_path)
+
+    response = http.put(
+        "/api/settings", json={"bandwidth_bytes_per_second": MIN_BANDWIDTH_BYTES_PER_SECOND - 1}
+    )
 
     assert response.status_code == 422
     assert services.settings.bandwidth_bytes_per_second is None

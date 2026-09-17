@@ -16,8 +16,8 @@
   <label>Worker threads
     <input type="number" name="worker_threads" min="1" max="16">
   </label>
-  <label>Bandwidth (bytes/sec, blank = unlimited)
-    <input type="number" name="bandwidth_bytes_per_second" min="1">
+  <label>Bandwidth (bytes/sec, blank = unlimited, minimum 65536)
+    <input type="number" name="bandwidth_bytes_per_second" min="65536">
   </label>
   <button type="submit">Save</button>
 </form>

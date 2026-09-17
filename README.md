@@ -82,7 +82,7 @@ The Settings page (and `PUT /api/settings`) exposes:
 | `albums_enabled` | Reproduce Immich albums as Google Photos albums. |
 | `deletions_enabled` | Propagate Immich deletions to Google Photos (see below). Off by default. |
 | `worker_threads` | How many uploads run concurrently. |
-| `bandwidth_bytes_per_second` | Cap on upload throughput; unset for none. |
+| `bandwidth_bytes_per_second` | Cap on upload throughput; unset for none. Minimum 65536 (64 KiB/s) -- a lower value is rejected outright, since the cap is honored exactly (not just approximated) and an absurdly low one would stall the reconciler, backfill, album sync and deletion sweep behind a single large upload for as long as the cap and file size dictate. |
 
 Schedule window, content filters and retry behavior are configured with
 sensible defaults and are not yet exposed for editing in this release.

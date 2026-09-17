@@ -26,7 +26,18 @@ MAX_WORKER_THREADS = 16
 # never be a valid *cap* in the first place. blank/omitted (None) is still
 # how "unlimited" is actually spelled; also shared with
 # main._merged_settings, for the same reason MIN_WORKER_THREADS is.
-MIN_BANDWIDTH_BYTES_PER_SECOND = 1
+#
+# Bounded well above 1: Worker._throttle_upload now sleeps the *full* wait
+# TokenBucket hands back rather than silently truncating it, so the
+# configured rate is actually honoured -- which means the rate itself is the
+# only thing standing between a "legitimate-looking" setting (ge=1 alone
+# would still permit 1 byte/second) and a single upload stalling the
+# reconciler, backfill, album mirror and deletion sweep (all of which share
+# the one background-loop thread with tick()) for days. 65536 (64 KiB/s) is
+# below what any real, deliberately-throttled connection is likely to be
+# capped at, so a value at or below it is far more likely a typo or a
+# misunderstanding of the field than an intentional rate.
+MIN_BANDWIDTH_BYTES_PER_SECOND = 65536
 
 # Spec: deletion propagation is "off by default, behind an explicit toggle
 # with typed confirmation" -- this is the only setting in the project that

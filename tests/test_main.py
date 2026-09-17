@@ -93,10 +93,26 @@ def test_malformed_persisted_settings_do_not_crash_build_services(tmp_path):
 
 def test_a_hand_edited_zero_bandwidth_cap_is_ignored_not_applied(tmp_path):
     """C2: 0 must never reach TokenBucket, including via a stored settings
-    row the API itself would now reject (ge=1). Falls back to the dataclass
-    default (None, unlimited) exactly like any other out-of-bounds value."""
+    row the API itself would now reject (ge=MIN_BANDWIDTH_BYTES_PER_SECOND).
+    Falls back to the dataclass default (None, unlimited) exactly like any
+    other out-of-bounds value."""
     conn = connect(tmp_path / "immich-gphotos.db")
     SettingRepo(conn).set(SETTING_KEY, {"bandwidth_bytes_per_second": 0})
+
+    services, _ = build_services(tmp_path, env={})
+
+    assert services.settings.bandwidth_bytes_per_second is None
+
+
+def test_a_hand_edited_bandwidth_cap_below_the_minimum_rate_is_ignored(tmp_path):
+    """A value like 1 (byte/second) is positive -- it would have passed the
+    old `ge=1` API bound -- but is still far below
+    MIN_BANDWIDTH_BYTES_PER_SECOND, the floor that keeps the throttle (which
+    now honours its full computed wait rather than truncating it) from being
+    reachable with a rate that stalls the background loop for days. A
+    hand-edited row must be rejected the same way the API rejects it."""
+    conn = connect(tmp_path / "immich-gphotos.db")
+    SettingRepo(conn).set(SETTING_KEY, {"bandwidth_bytes_per_second": 1})
 
     services, _ = build_services(tmp_path, env={})
 
