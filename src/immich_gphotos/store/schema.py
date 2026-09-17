@@ -73,7 +73,28 @@ COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
-    """Bring an existing database up to SCHEMA. Safe to run on every open."""
+    """Bring an existing database up to SCHEMA. Safe to run on every open.
+
+    This is the one place in the codebase that runs an execute-then-read pair
+    on the shared connection WITHOUT holding `conn.lock`, and that is only
+    safe because of when it runs: `connect()` has not returned yet, so no
+    other thread can hold a reference to this connection. Every repository
+    method must take the lock (a shared `sqlite3.Connection` interleaves
+    cursors across threads and corrupts results -- see the carry-forward note
+    in the project ledger). A future migration that backfills a column by
+    reading data rows must not copy this shape to anywhere the connection is
+    already published.
+
+    The table_info check and the ALTER are not atomic together, so two
+    processes opening a pre-migration database at the same instant can both
+    see the column missing and the loser raises "duplicate column name",
+    failing that start. Left as-is deliberately: there is a single
+    `connect()` call site and uvicorn runs one process here, the window
+    exists only on the first upgrading open, and the next start succeeds
+    because the column now exists. Two containers sharing one data volume
+    have worse problems than this. Each ALTER is its own atomic transaction
+    (`isolation_level=None`), so a death mid-migration leaves no half-state.
+    """
     for table, column, ddl in COLUMN_MIGRATIONS:
         columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in columns:

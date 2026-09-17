@@ -200,6 +200,15 @@ def rebuild_runtime(
     if services.loops_handle is not None:
         services.loops_handle.replace(loops)
 
+    # A real Runtime may own a worker-thread pool (see Runtime.close); shut
+    # the outgoing one down so pool threads do not leak on every settings
+    # save. getattr rather than a direct call: test doubles standing in for
+    # `services.runtime` (StubRuntime and friends) carry no pool and no
+    # close() to call.
+    close = getattr(old_runtime, "close", None)
+    if close is not None:
+        close()
+
     # The one thing a rebuild has to change in the database. An upload whose
     # metered wait was too long to sleep out inline is parked on a deadline
     # computed from the cap that was in force when it was metered (see
@@ -211,17 +220,15 @@ def rebuild_runtime(
     # up to weeks for a large backlog, with no way to undo it from the UI.
     # Release those rows (and only those: failure backoffs, halt retries and
     # window defers keep their deadlines) so the new cap re-meters them.
+    #
+    # Ordered after close() on purpose: this touches the database and can
+    # raise (a lock that outlasts busy_timeout, a full disk). Running it
+    # earlier meant such a failure propagated out of a rebuild that had
+    # already swapped the graph in, leaking the outgoing pool's threads for
+    # the life of the process. The swap is done either way; the pool is shut
+    # down first, and only then do we risk raising.
     if old_bandwidth != settings.bandwidth_bytes_per_second:
         services.assets.release_bandwidth_deferrals()
-
-    # A real Runtime may own a worker-thread pool (see Runtime.close); shut
-    # the outgoing one down so pool threads do not leak on every settings
-    # save. getattr rather than a direct call: test doubles standing in for
-    # `services.runtime` (StubRuntime and friends) carry no pool and no
-    # close() to call.
-    close = getattr(old_runtime, "close", None)
-    if close is not None:
-        close()
 
     # Close the outgoing Immich client's connection pool too, but only when
     # it is genuinely being replaced (the common "only settings changed"
