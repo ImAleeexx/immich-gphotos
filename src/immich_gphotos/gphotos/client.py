@@ -23,7 +23,7 @@ _AUTH_MARKERS = (
 )
 _RATE_MARKERS = ("429", "rate limit", "too many requests")
 _QUOTA_MARKERS = ("quota", "storage full", "out of space")
-_TRANSIENT_MARKERS = ("timed out", "timeout", "connection", "temporarily", "502", "503", "504")
+_TRANSIENT_MARKERS = ("timed out", "timeout", "connection", "temporarily", "500", "502", "503", "504")
 
 
 def classify_gpmc_error(exc: BaseException) -> ErrorClass:
@@ -92,18 +92,25 @@ class GpmcClient:
         here is what keeps every failure inside the `GPhotosError` boundary.
 
         Construction's only job is obtaining an auth token from `auth_data`, so
-        a non-network failure there is by definition an `auth_data` problem —
-        force it to AUTH_INVALID even if the message doesn't match a marker.
-        A real connection error or timeout during that same step is a passing
-        network blip, not a bad credential, so it is left as TRANSIENT rather
-        than forced — forcing it would halt the service and demand a needless
-        re-extraction of `auth_data` from an Android device.
+        a genuinely unrecognised local failure there (classify_gpmc_error
+        returns UNKNOWN — e.g. a KeyError/ValueError from parsing a malformed
+        `auth_data` string) is by definition an `auth_data` problem: force it
+        to AUTH_INVALID even though the message didn't match an auth marker.
+
+        Anything classify_gpmc_error already has an opinion about is passed
+        through unchanged. In particular TRANSIENT (a connection error or
+        timeout), RATE_LIMITED and QUOTA_EXHAUSTED must not be forced to
+        AUTH_INVALID: "not recognised as an auth problem" and "not transient"
+        are different questions, and a construction-phase 429 or 5xx from
+        Google's auth endpoint is a passing Google-side problem, not a bad
+        credential — forcing it would halt the whole service and demand a
+        needless re-extraction of `auth_data` from an Android device.
         """
         try:
             client = self._client
         except Exception as exc:  # noqa: BLE001 - deliberately broad, then classified
             error_class = classify_gpmc_error(exc)
-            if error_class is not ErrorClass.TRANSIENT:
+            if error_class is ErrorClass.UNKNOWN:
                 error_class = ErrorClass.AUTH_INVALID
             raise GPhotosError(f"authentication failed: {exc}", error_class) from exc
 

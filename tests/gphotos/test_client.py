@@ -66,14 +66,6 @@ def test_a_construction_time_failure_surfaces_as_gphotos_error_from_every_method
     assert excinfo.value.error_class.halts_transfer() is True
 
 
-@ALL_PUBLIC_METHODS
-def test_a_construction_time_failure_halts_transfer_from_every_method(call, tmp_path):
-    client = GpmcClient(auth_data=MALFORMED_AUTH_DATA)
-    with pytest.raises(GPhotosError) as excinfo:
-        call(client, tmp_path)
-    assert excinfo.value.error_class.halts_transfer() is True
-
-
 def test_a_connection_error_during_construction_is_transient_not_auth_invalid(monkeypatch):
     """Construction also performs (in principle) a network call to fetch the
     auth token. A passing network blip during that call must not be forced to
@@ -91,4 +83,47 @@ def test_a_connection_error_during_construction_is_transient_not_auth_invalid(mo
         client.exists("checksum")
 
     assert excinfo.value.error_class is ErrorClass.TRANSIENT
+    assert excinfo.value.error_class.halts_transfer() is False
+
+
+def test_a_construction_phase_http_500_is_transient_not_auth_invalid(monkeypatch):
+    """Round 2 finding: forcing "anything classify_gpmc_error doesn't call
+    TRANSIENT" to AUTH_INVALID also swept up RATE_LIMITED, QUOTA_EXHAUSTED and
+    UNKNOWN. A construction-phase HTTP 500 from Google's auth endpoint is a
+    transient Google-side problem (classify_gpmc_error already recognises
+    "500" as a transient marker) and must be passed through unchanged, not
+    forced to AUTH_INVALID — that would halt the service for what is really a
+    passing server error."""
+
+    def raise_500(*args, **kwargs):
+        raise Exception("500 Internal Server Error")
+
+    monkeypatch.setattr("gpmc.Client", raise_500)
+
+    client = GpmcClient(auth_data="irrelevant, gpmc.Client is patched to fail")
+
+    with pytest.raises(GPhotosError) as excinfo:
+        client.exists("checksum")
+
+    assert excinfo.value.error_class is ErrorClass.TRANSIENT
+    assert excinfo.value.error_class.halts_transfer() is False
+
+
+def test_a_construction_phase_429_is_rate_limited_not_auth_invalid(monkeypatch):
+    """Same distinction as the 500 case above, for RATE_LIMITED: "not
+    recognised as an auth problem" and "not transient" are different
+    questions, and only a genuinely UNKNOWN construction failure should be
+    forced to AUTH_INVALID."""
+
+    def raise_429(*args, **kwargs):
+        raise Exception("429 Too Many Requests")
+
+    monkeypatch.setattr("gpmc.Client", raise_429)
+
+    client = GpmcClient(auth_data="irrelevant, gpmc.Client is patched to fail")
+
+    with pytest.raises(GPhotosError) as excinfo:
+        client.exists("checksum")
+
+    assert excinfo.value.error_class is ErrorClass.RATE_LIMITED
     assert excinfo.value.error_class.halts_transfer() is False
