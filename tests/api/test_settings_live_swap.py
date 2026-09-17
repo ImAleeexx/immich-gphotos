@@ -134,6 +134,32 @@ def test_zero_bandwidth_cap_is_rejected_by_the_api(tmp_path):
     assert services.settings.bandwidth_bytes_per_second is None
 
 
+def test_explicit_null_clears_an_existing_bandwidth_cap(tmp_path):
+    """I5: both UIs send `bandwidth_bytes_per_second: null` for a blank field.
+    exclude_none=True used to drop that key entirely, so the old cap silently
+    persisted forever -- "blank = unlimited" was a lie."""
+    http, services, _ = _rig(tmp_path, initial_settings={"bandwidth_bytes_per_second": 500_000})
+    assert services.settings.bandwidth_bytes_per_second == 500_000
+
+    response = http.put("/api/settings", json={"bandwidth_bytes_per_second": None})
+
+    assert response.status_code == 200
+    assert services.settings.bandwidth_bytes_per_second is None
+    assert http.get("/api/settings").json()["bandwidth_bytes_per_second"] is None
+
+
+def test_omitting_the_bandwidth_field_leaves_an_existing_cap_unchanged(tmp_path):
+    """The other half of I5: a field the client never sent at all (as opposed
+    to explicitly nulling it) must not be touched by an unrelated save."""
+    http, services, _ = _rig(tmp_path, initial_settings={"bandwidth_bytes_per_second": 500_000})
+
+    response = http.put("/api/settings", json={"worker_threads": 4})
+
+    assert response.status_code == 200
+    assert services.settings.worker_threads == 4
+    assert services.settings.bandwidth_bytes_per_second == 500_000
+
+
 # --- Deletion propagation's typed confirmation (spec: "Off by default, ------
 # behind an explicit toggle with typed confirmation") -----------------------
 

@@ -44,6 +44,32 @@ class SettingsPatch(BaseModel):
     bandwidth_bytes_per_second: int | None = Field(default=None, ge=MIN_BANDWIDTH_BYTES_PER_SECOND)
 
 
+def resolve_settings_updates(patch: SettingsPatch, *, exclude: set[str]) -> dict[str, Any]:
+    """Turn a `SettingsPatch` (or the wizard's `WizardOptions`, which extends
+    it) into the dict of fields to actually apply -- distinguishing "field
+    omitted" from "field explicitly set to null".
+
+    `model_dump(exclude_none=True)` alone cannot tell those apart, so a client
+    sending `bandwidth_bytes_per_second: null` to mean "clear the cap" (both
+    UIs do exactly this for a blank field) had that key silently dropped and
+    the old cap kept forever. `model_fields_set` is what actually
+    distinguishes them: a field the client sent is in that set even when its
+    value is `None`.
+
+    Every other field on `SettingsPatch` (`quality`, `albums_enabled`,
+    `deletions_enabled`, `worker_threads`) has no `None` state on `Settings`
+    itself -- `None` there only ever means "leave unchanged" -- so an
+    explicit null for any of those is treated the same as omitting it.
+    `bandwidth_bytes_per_second` is the only field that is genuinely nullable
+    on `Settings` (`None` means "no cap"), so it is the only one where an
+    explicit null is meaningful and must be applied rather than dropped.
+    """
+    updates = patch.model_dump(exclude_none=True, exclude=exclude)
+    if "bandwidth_bytes_per_second" in patch.model_fields_set and patch.bandwidth_bytes_per_second is None:
+        updates["bandwidth_bytes_per_second"] = None
+    return updates
+
+
 def require_deletion_confirmation(patch: SettingsPatch, *, currently_enabled: bool) -> None:
     """Guard the one direction that matters: turning deletion propagation ON.
 
@@ -130,7 +156,7 @@ def get_settings(request: Request) -> dict:
 def put_settings(patch: SettingsPatch, request: Request) -> dict:
     services: Services = request.app.state.services
     require_deletion_confirmation(patch, currently_enabled=services.settings.deletions_enabled)
-    updates = patch.model_dump(exclude_none=True, exclude={"confirm_deletions"})
+    updates = resolve_settings_updates(patch, exclude={"confirm_deletions"})
     stored = dict(services.settings_repo.get(SETTING_KEY) or {})
     stored.update(updates)
     services.settings_repo.set(SETTING_KEY, stored)
