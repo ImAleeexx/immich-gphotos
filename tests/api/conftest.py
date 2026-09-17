@@ -56,6 +56,20 @@ def configured_services(rig_services):
 
 
 @pytest.fixture
+def http(rig_services):
+    """An authenticated TestClient over a fresh, unconfigured install."""
+    from fastapi.testclient import TestClient
+
+    from immich_gphotos.api.app import create_app
+    from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
+
+    rig_services.settings_repo.set(PASSWORD_KEY, hash_password("test-password"))
+    client = TestClient(create_app(rig_services), follow_redirects=False)
+    assert client.post("/login", data={"password": "test-password"}).status_code == 303
+    return client
+
+
+@pytest.fixture
 def asset_factory():
     def make(i: str) -> Asset:
         return Asset(

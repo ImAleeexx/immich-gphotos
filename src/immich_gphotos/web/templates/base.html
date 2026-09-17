@@ -2,82 +2,49 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>immich-gphotos</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    :root {
-      --bg: #0f1115;
-      --panel: #1a1d24;
-      --text: #e6e8eb;
-      --muted: #9aa1ac;
-      --accent: #4f8cff;
-      --border: #2a2e37;
-      --warn: #b45309;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: var(--bg);
-      color: var(--text);
-    }
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0.75rem 1.25rem;
-      border-bottom: 1px solid var(--border);
-    }
-    nav a {
-      color: var(--muted);
-      text-decoration: none;
-      margin-right: 1.25rem;
-      font-size: 0.9rem;
-    }
-    nav a:hover { color: var(--text); }
-    main { padding: 1.5rem; max-width: 960px; margin: 0 auto; }
-    h1 { margin-top: 0; }
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1rem;
-    }
-    .cards { display: flex; gap: 1rem; flex-wrap: wrap; }
-    .cards .card { flex: 1; min-width: 120px; text-align: center; }
-    .cards .card span { display: block; font-size: 1.8rem; font-weight: 600; }
-    .cards .card label { color: var(--muted); font-size: 0.8rem; }
-    .banner { background: var(--warn); color: #fff; padding: 0.5rem 1rem; border-radius: 6px; margin-bottom: 1rem; }
-    .hidden { display: none; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
-    input, button, select { font: inherit; }
-    input[type="password"], input[type="number"], select {
-      background: var(--panel); border: 1px solid var(--border); color: var(--text);
-      border-radius: 6px; padding: 0.5rem; width: 100%; margin: 0.5rem 0;
-    }
-    button {
-      background: var(--accent); color: #fff; border: none; border-radius: 6px;
-      padding: 0.5rem 1rem; cursor: pointer;
-    }
-    form.card { max-width: 320px; margin: 3rem auto; }
-    ul#activity { list-style: none; padding: 0; font-size: 0.85rem; color: var(--muted); }
-  </style>
+  <title>{% block page_title %}immich-gphotos{% endblock %}</title>
+  <meta name="description" content="Mirror an Immich library into Google Photos and keep it there.">
+  <meta name="color-scheme" content="dark light">
+  <meta name="robots" content="noindex, nofollow">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <header>
-    <nav>
-      <a href="/">Dashboard</a>
-      <a href="/failures">Failures</a>
-      <a href="/settings">Settings</a>
-      <a href="/diagnostics">Diagnostics</a>
-      <a href="/wizard">Setup</a>
-    </nav>
-    <form method="post" action="/logout">
-      <button type="submit">Sign out</button>
-    </form>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="header">
+    <div class="shell header__inner">
+      <a class="brand" href="/">
+        <svg class="brand__mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <rect x="6.5" y="6.5" width="14" height="14" rx="3.5" fill="none"
+                stroke="currentColor" stroke-width="2.25"/>
+          <rect x="11.5" y="11.5" width="14" height="14" rx="3.5" fill="none"
+                stroke="currentColor" stroke-width="2.25" opacity="0.45"/>
+        </svg>
+        <span>immich-gphotos</span>
+      </a>
+      {% if show_chrome | default(true) %}
+      <nav class="nav" aria-label="Primary">
+        {% set links = [
+          ("dashboard", "/", "Dashboard"),
+          ("failures", "/failures", "Failures"),
+          ("settings", "/settings", "Settings"),
+          ("diagnostics", "/diagnostics", "Diagnostics"),
+          ("wizard", "/wizard", "Setup"),
+        ] %}
+        {% for key, href, label in links %}
+        <a class="nav__link" href="{{ href }}"
+           {% if nav_active == key %}aria-current="page"{% endif %}>{{ label }}</a>
+        {% endfor %}
+      </nav>
+      <form method="post" action="/logout" class="header__out">
+        <button type="submit" class="btn btn--quiet">Sign out</button>
+      </form>
+      {% endif %}
+    </div>
   </header>
-  <main>
+  <main id="main" class="shell" tabindex="-1">
     {% block content %}{% endblock %}
   </main>
 </body>

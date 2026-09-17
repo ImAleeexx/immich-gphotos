@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% set show_chrome = false %}
+{% block page_title %}Page not found · immich-gphotos{% endblock %}
+{% block content %}
+<section class="panel empty stagger">
+  <p class="num empty__code">404</p>
+  <h1>That page does not exist</h1>
+  <p>The link may be out of date, or the address mistyped.</p>
+  <p class="empty__actions">
+    <a class="btn btn--primary" href="/">Go to the dashboard</a>
+    <a class="btn btn--ghost" href="/diagnostics">Check diagnostics</a>
+  </p>
+</section>
+{% endblock %}

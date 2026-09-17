@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="8" fill="#0e1113"/>
+  <!-- Two overlapping frames: one library mirrored into another. -->
+  <rect x="6.5" y="6.5" width="14" height="14" rx="3.5"
+        fill="none" stroke="#5ec2c2" stroke-width="2.25"/>
+  <rect x="11.5" y="11.5" width="14" height="14" rx="3.5"
+        fill="none" stroke="#5ec2c2" stroke-width="2.25" opacity="0.45"/>
+</svg>

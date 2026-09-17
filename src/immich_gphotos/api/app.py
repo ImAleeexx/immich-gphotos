@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from immich_gphotos.api import auth, hooks, ops, pages, readiness, routes, stream, wizard
@@ -41,6 +41,14 @@ def create_app(services: Services) -> FastAPI:
         """
         sanitized = [{k: v for k, v in error.items() if k != "input"} for error in exc.errors()]
         return JSONResponse(status_code=422, content=jsonable_encoder({"detail": sanitized}))
+
+    @app.exception_handler(404)
+    async def render_not_found(request: Request, exc) -> Response:
+        """A browser hitting an unknown path got FastAPI's raw JSON body. API
+        clients still should -- only navigations get the rendered page."""
+        if request.url.path.startswith("/api") or "text/html" not in request.headers.get("accept", ""):
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        return pages.render_not_found(request)
 
     @app.middleware("http")
     async def require_session(request, call_next):

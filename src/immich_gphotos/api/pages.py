@@ -13,6 +13,10 @@ def _render(name: str, request: Request, **context):
     return TEMPLATES.TemplateResponse(request, name, context)
 
 
+def render_not_found(request: Request):
+    return TEMPLATES.TemplateResponse(request, "404.html", {}, status_code=404)
+
+
 @router.get("/login")
 def login_page(request: Request):
     return _render("login.html", request, first_run=requires_setup(request.app.state.services))
