@@ -65,9 +65,10 @@
     return new Promise((resolve) => {
       const dialog = document.createElement("dialog");
       dialog.className = "dialog";
+      dialog.setAttribute("aria-labelledby", "confirm-phrase-title");
       dialog.innerHTML =
         '<form method="dialog" class="dialog__body">' +
-        '<h2 class="dialog__title"></h2>' +
+        '<h2 class="dialog__title" id="confirm-phrase-title"></h2>' +
         '<p class="dialog__text"></p>' +
         '<label class="field"><span class="field__label"></span>' +
         '<input class="input" type="text" autocomplete="off" spellcheck="false"></label>' +
@@ -86,6 +87,17 @@
       const confirm = dialog.querySelector('button[value="confirm"]');
       input.addEventListener("input", () => {
         confirm.disabled = input.value !== options.phrase;
+      });
+
+      /* <form method="dialog"> resolves implicit Enter submission to the
+         first submit button in tree order, which is Cancel -- Confirm being
+         disabled does not stop that. Cancel stays visually first (the
+         correct order); Enter is handled here instead so it activates
+         Confirm when the phrase matches, and does nothing otherwise. */
+      input.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        if (!confirm.disabled) confirm.click();
       });
 
       dialog.addEventListener("close", () => {
@@ -119,7 +131,14 @@
     });
   }
 
-  function subscribeStatus(handler) {
+  /* `onError`, when given, is called on every EventSource error -- including
+     transient ones the browser will retry on its own. The caller decides
+     whether `source.readyState` (passed through) means "still reconnecting"
+     or "dead": a session-token rotation 307s /events to /login, EventSource
+     gets text/html back instead of text/event-stream, and per spec that
+     closes the stream for good with no further retries -- readyState then
+     reads EventSource.CLOSED. */
+  function subscribeStatus(handler, onError) {
     const source = new EventSource("/events");
     source.onmessage = (event) => {
       let data;
@@ -130,6 +149,9 @@
       }
       handler(data);
     };
+    if (onError) {
+      source.onerror = () => onError(source.readyState);
+    }
     return source;
   }
 
