@@ -6,6 +6,7 @@ from immich_gphotos.clock import FakeClock
 from immich_gphotos.models import Asset, AssetState, ErrorClass, Outcome, Priority
 from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.store.db import connect
+from immich_gphotos.store.kv import CursorRepo, SettingRepo
 
 CHECKSUM = "qvTGHdzF6KLavt4PO0gs2a6pQ00="
 
@@ -105,6 +106,69 @@ def test_concurrent_upsert_same_id_does_not_raise(repo):
     assert stored is not None
     assert stored.asset.immich_id == asset_id
     assert stored.priority == Priority.WEBHOOK
+
+
+def test_concurrent_cross_repo_access_does_not_raise(repo):
+    """The guard must be scoped to the shared connection, not to a single repo (or instance).
+
+    In production, the webhook receiver, the reconciler and the worker pool each
+    construct their own repo objects around the *same* shared `sqlite3.Connection`
+    (created with check_same_thread=False for exactly this reason): e.g. the worker
+    pool has its own `AssetRepo`, and the reconciler has its own separate `AssetRepo`
+    plus a `CursorRepo` for its progress cursor. A lock stored on a repo *instance*
+    (or even on the `AssetRepo` class generally, one lock per construction) would not
+    serialize between these independently-constructed objects, even though they all
+    drive the one underlying connection. Only a lock that lives on the connection
+    itself closes that gap.
+
+    This test builds a *second*, independent `AssetRepo` (simulating the reconciler)
+    alongside the fixture's repo (simulating a worker), plus a `CursorRepo` and
+    `SettingRepo`, all wrapping the same connection, and hammers all of them
+    concurrently from two threads. Verified: with per-instance/per-repo locking
+    instead of the connection-scoped lock, this reliably raises `sqlite3.InterfaceError`
+    or `TypeError` from corrupted `RETURNING` rows; with the connection-scoped lock it
+    does not.
+    """
+    import threading
+
+    r, _ = repo
+    conn = r._conn
+    # A second AssetRepo instance sharing the same connection, standing in for a
+    # different component (the reconciler) that constructs its own repo object.
+    reconciler_assets = AssetRepo(conn, FakeClock())
+    cursor_repo = CursorRepo(conn)
+    setting_repo = SettingRepo(conn)
+
+    exceptions: list[Exception] = []
+    barrier = threading.Barrier(2)
+    iterations = 500
+
+    def hammer_worker():
+        barrier.wait()
+        try:
+            for i in range(iterations):
+                r.upsert_pending(make_asset(f"cross_{i % 5}"), Priority.WEBHOOK)
+                r.claim_next(limit=1)
+        except Exception as e:  # noqa: BLE001 - we want to catch anything at all
+            exceptions.append(e)
+
+    def hammer_reconciler():
+        barrier.wait()
+        try:
+            for i in range(iterations):
+                reconciler_assets.upsert_pending(make_asset(f"cross_{i % 5}"), Priority.BACKFILL)
+                cursor_repo.set("reconcile", f"value-{i}")
+                setting_repo.set("filters", {"n": i})
+        except Exception as e:  # noqa: BLE001
+            exceptions.append(e)
+
+    threads = [threading.Thread(target=hammer_worker), threading.Thread(target=hammer_reconciler)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert exceptions == [], f"Exceptions occurred: {exceptions}"
 
 
 def test_terminal_row_priority_is_not_downgraded(repo):
