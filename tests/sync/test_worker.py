@@ -325,3 +325,81 @@ def test_wait_just_under_the_bound_still_sleeps_inline(tmp_path):
     assert result.state is AssetState.SYNCED
     assert sleeps == [28.0]
     assert sleeps[0] < MAX_INLINE_THROTTLE_WAIT_SECONDS
+
+
+def test_several_assets_deferred_in_one_pass_get_staggered_deadlines(tmp_path):
+    """C1 regression guard at the worker level. Deferring is only a real
+    throttle if the deadlines it hands out queue behind one another: while
+    `TokenBucket.take` forgave the debt it had just charged, every asset
+    metered in the same instant was told to wait the same number of seconds,
+    so a whole backlog came due at the same moment and then uploaded
+    unmetered (each retry short-circuits on `_throttle_prepaid`). At 100
+    bytes/second, three 10,000-byte assets must come due 100 seconds apart."""
+    clock = FakeClock()
+    assets = AssetRepo(connect(tmp_path / "t.db"), clock)
+    content = b"x" * 10_000
+    ids = ["a1", "a2", "a3"]
+    immich = FakeImmichClient(contents=dict.fromkeys(ids, content))
+    gphotos = FakeGooglePhotosClient()
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    sleeps: list[float] = []
+    worker = Worker(
+        assets,
+        gphotos,
+        resolver,
+        Filters(),
+        RetryPolicy(jitter=0.0),
+        clock,
+        bandwidth=TokenBucket(rate_bytes_per_second=100, clock=clock),
+        sleep=sleeps.append,
+    )
+
+    for immich_id in ids:
+        stored = claim(
+            assets,
+            replace(ASSET, immich_id=immich_id, checksum=f"sum-{immich_id}", size_bytes=len(content)),
+        )
+        assert worker.process(stored).deferred is True
+
+    start = clock.now()
+    deadlines = [(datetime.fromisoformat(assets.get(i).next_attempt_at) - start).total_seconds() for i in ids]
+    assert deadlines == [99.0, 199.0, 299.0]
+    assert sleeps == []
+    assert gphotos.uploads == []
+
+
+def test_a_deferred_asset_that_then_becomes_ineligible_drops_its_prepaid_entry(tmp_path):
+    """M1. `_throttle_prepaid` is only discarded inside `_throttle_upload`,
+    which every earlier return in `process()` skips. An asset that defers and
+    is then trashed in Immich returns `ineligible` before the throttle runs,
+    and its id used to sit in the set for the life of the process -- the row
+    is terminal now, so nothing will ever come back to clear it."""
+    clock = FakeClock()
+    assets = AssetRepo(connect(tmp_path / "t.db"), clock)
+    content = b"x" * 10_000
+    immich = FakeImmichClient(contents={"a1": content})
+    gphotos = FakeGooglePhotosClient()
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    worker = Worker(
+        assets,
+        gphotos,
+        resolver,
+        Filters(),
+        RetryPolicy(jitter=0.0),
+        clock,
+        bandwidth=TokenBucket(rate_bytes_per_second=100, clock=clock),
+        sleep=[].append,
+    )
+    big = replace(ASSET, size_bytes=len(content))
+    assert worker.process(claim(assets, big)).deferred is True
+    assert worker._throttle_prepaid == {"a1"}  # charged, waiting to be reclaimed
+
+    # The user trashes it while it waits; the reconciler's upsert_pending
+    # records that, and the retry never reaches the throttle.
+    clock.advance(timedelta(seconds=99))
+    assets.upsert_pending(replace(big, is_trashed=True), Priority.WEBHOOK)
+    result = worker.process(assets.claim_next(limit=1)[0])
+
+    assert result.state is AssetState.INELIGIBLE
+    assert result.reason == "trashed"
+    assert worker._throttle_prepaid == set()

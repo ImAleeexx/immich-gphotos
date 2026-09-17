@@ -13,6 +13,7 @@ from immich_gphotos.store.db import connect
 from immich_gphotos.store.events import EventRepo
 from immich_gphotos.sync.bytes import ByteResolver
 from immich_gphotos.sync.runtime import Runtime
+from immich_gphotos.sync.throttle import TokenBucket
 from immich_gphotos.sync.worker import Worker
 
 
@@ -350,6 +351,62 @@ def test_events_are_recorded_and_bounded(rig):
         events.add("info", f"message {i}")
     assert len(events.recent(3)) == 3
     assert events.recent(1)[0]["message"] == "message 4"
+
+
+def test_a_deferred_backlog_drains_at_the_configured_bandwidth_cap(tmp_path):
+    """C1 regression guard over the whole loop. Every asset here is far too
+    large for its cap to be slept out inline, so all of them take the defer
+    path -- which is the only path that matters in practice, since at the
+    minimum configurable cap (MIN_BANDWIDTH_BYTES_PER_SECOND) anything above
+    a couple of megabytes defers. Driving `tick` with a FakeClock that jumps
+    to each successive deadline, the backlog must take about as long as the
+    configured rate says it should: 20 assets x 10,000 bytes at 100 bytes/
+    second is ~2,000 seconds of transfer, and no wall-clock time at all,
+    since nothing is ever slept out on the loop thread."""
+    clock = FakeClock(datetime(2026, 9, 17, 12, 0, tzinfo=UTC))
+    conn = connect(tmp_path / "t.db")
+    assets = AssetRepo(conn, clock)
+    events = EventRepo(conn, clock)
+    gphotos = FakeGooglePhotosClient()
+    rate = 100
+    content = b"x" * 10_000
+    ids = [f"a{i:02d}" for i in range(20)]
+    immich = FakeImmichClient(contents=dict.fromkeys(ids, content))
+    resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
+    sleeps: list[float] = []
+    worker = Worker(
+        assets,
+        gphotos,
+        resolver,
+        Filters(),
+        RetryPolicy(jitter=0.0),
+        clock,
+        bandwidth=TokenBucket(rate_bytes_per_second=rate, clock=clock),
+        sleep=sleeps.append,
+    )
+    runtime = Runtime(assets, worker, Settings(worker_threads=1), clock, events, immich=immich)
+    for i in ids:
+        assets.upsert_pending(asset(i), Priority.BACKFILL)
+
+    start = clock.now()
+    for _ in range(len(ids) * 4):  # generous bound, so a stall fails instead of hanging
+        runtime.tick(limit=8)
+        if len(gphotos.uploads) == len(ids):
+            break
+        # Nothing is due right now: jump to whenever the next deferred asset
+        # says it may move its bytes. This is the simulated time the cap costs.
+        due = conn.execute(
+            "SELECT MIN(next_attempt_at) FROM asset WHERE state = ?",
+            (AssetState.PENDING.value,),
+        ).fetchone()[0]
+        assert due is not None, "backlog stalled with nothing pending"
+        clock.advance(max(timedelta(0), datetime.fromisoformat(due) - clock.now()))
+
+    elapsed = (clock.now() - start).total_seconds()
+    ideal = len(ids) * len(content) / rate  # 2,000 seconds
+    assert len(gphotos.uploads) == len(ids)
+    assert sleeps == []  # the loop thread was never blocked
+    assert ideal * 0.95 <= elapsed <= ideal * 1.05
 
 
 def test_event_ring_discards_the_oldest(tmp_path):

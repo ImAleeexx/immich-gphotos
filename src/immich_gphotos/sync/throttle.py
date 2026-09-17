@@ -41,6 +41,24 @@ class TokenBucket:
         self._lock = threading.Lock()
 
     def take(self, n: int) -> float:
+        """Charge `n` bytes and return the seconds the caller owes before
+        they may move.
+
+        A shortfall is left on the balance as debt rather than written off.
+        That matters because the caller no longer necessarily sleeps out
+        what it is told (`Worker._throttle_upload` defers a long wait to the
+        asset's next attempt instead of blocking the loop thread), so the
+        sleep is no longer the thing enforcing the cap -- this balance is.
+        Zeroing it here meant every caller metered in the same instant was
+        handed the same wait, came due at the same moment and then moved its
+        bytes with nothing metering it. Carrying the debt makes successive
+        takes queue behind one another, so their waits stagger and the
+        average rate actually holds.
+
+        The `min` still bounds the *positive* side: an idle bucket banks at
+        most one second of credit and cannot burst past the cap. A negative
+        balance is always below that bound, so it passes through untouched.
+        """
         with self._lock:
             now = self._clock.now()
             elapsed = (now - self._updated).total_seconds()
@@ -49,6 +67,4 @@ class TokenBucket:
             self._tokens -= n
             if self._tokens >= 0:
                 return 0.0
-            wait = -self._tokens / self._rate
-            self._tokens = 0.0
-            return wait
+            return -self._tokens / self._rate

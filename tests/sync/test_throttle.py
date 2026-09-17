@@ -69,3 +69,29 @@ def test_a_zero_rate_is_rejected_rather_than_clamped_to_the_most_extreme_throttl
 def test_a_negative_rate_is_also_rejected():
     with pytest.raises(ValueError, match="positive"):
         TokenBucket(rate_bytes_per_second=-5, clock=FakeClock())
+
+
+def test_takes_at_the_same_instant_queue_up_behind_one_another_with_cumulative_waits():
+    """C1 regression guard. `take` used to zero the bucket after computing a
+    wait, forgiving the debt it had just handed the caller. That was harmless
+    while the only caller slept the wait out inline -- the sleep *was* the
+    enforcement -- but `Worker._throttle_upload` now defers an asset for a
+    long wait instead of sleeping, so nothing else enforces it: every asset
+    metered in the same instant got the *same* wait, came due at the same
+    moment, and then uploaded unmetered. The debt must persist, so each
+    successive take queues behind the ones before it.
+
+    100 bytes/second, 10,000-byte assets: the bucket starts with one second
+    of credit, so the first owes 99s and each further one owes 100s more."""
+    bucket = TokenBucket(rate_bytes_per_second=100, clock=FakeClock())
+    assert [bucket.take(10_000) for _ in range(5)] == [99.0, 199.0, 299.0, 399.0, 499.0]
+
+
+def test_an_idle_bucket_accrues_at_most_one_seconds_worth_of_credit():
+    """The other side of the same line: carrying debt forward must not also
+    let an idle bucket bank unlimited credit and then burst through the cap.
+    Capacity stays one second of tokens however long the bucket sat unused."""
+    clock = FakeClock()
+    bucket = TokenBucket(rate_bytes_per_second=100, clock=clock)
+    clock.advance(timedelta(hours=1))
+    assert bucket.take(300) == 2.0  # 100 tokens of credit, not an hour's worth

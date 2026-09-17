@@ -95,7 +95,11 @@ class Worker:
         # is in-memory only, same as the bucket itself -- lost on restart,
         # which just re-meters the asset fresh from a newly-full bucket
         # rather than double-charging a debt no longer tracked, a fine
-        # degradation and not a correctness bug.
+        # degradation and not a correctness bug. An entry lives only as long
+        # as its asset is genuinely still in flight: `process` drops it on
+        # every exit except the two deliberate defer returns, so an asset
+        # that goes terminal (or fails) between the defer and the retry does
+        # not leave its id here for the life of the process.
         self._throttle_prepaid: set[str] = set()
         self._throttle_prepaid_lock = threading.Lock()
 
@@ -123,73 +127,100 @@ class Worker:
         `filters.album_allowlist` is actually set.
         """
         asset = stored.asset
-
-        reason = check_eligibility(asset, self._filters, album_allowlist_ids)
-        if reason is not None:
-            self._assets.mark_ineligible(asset.immich_id, reason)
-            return WorkerResult(AssetState.INELIGIBLE, reason=reason)
-
-        local_key = self._assets.media_key_for_checksum(asset.checksum)
-        if local_key:
-            self._assets.mark_synced(asset.immich_id, local_key, Outcome.ALREADY_PRESENT)
-            return WorkerResult(AssetState.SYNCED, Outcome.ALREADY_PRESENT, local_key)
-
+        # `_throttle_prepaid` must only ever hold assets that are genuinely
+        # still in flight -- i.e. ones this process deliberately handed back
+        # to the queue to wait out a charge the bucket has already taken.
+        # Every other way out of this call ends that transfer's life for
+        # now, so the entry is dropped: `_throttle_upload` is skipped
+        # entirely by the eligibility, local-dedup and remote-dedup returns
+        # and by any exception, and an asset that lands in a terminal state
+        # there (trashed between the defer and the retry, say) is never
+        # claimed again, so nothing would ever come back to clear it. Hence
+        # the flag rather than a blanket `finally`: the two defer returns
+        # are exactly the paths that must keep it.
+        retain_prepaid = False
         try:
-            remote_key = self._gphotos.exists(asset.checksum)
-            if remote_key:
-                self._assets.mark_synced(asset.immich_id, remote_key, Outcome.ALREADY_PRESENT)
-                return WorkerResult(AssetState.SYNCED, Outcome.ALREADY_PRESENT, remote_key)
+            reason = check_eligibility(asset, self._filters, album_allowlist_ids)
+            if reason is not None:
+                self._assets.mark_ineligible(asset.immich_id, reason)
+                return WorkerResult(AssetState.INELIGIBLE, reason=reason)
 
-            if not transfer_allowed:
-                # Neither dedup check cleared it for free -- this asset
-                # genuinely needs bytes moved. That's the one thing the
-                # schedule window gates. Hand it back to PENDING without
-                # counting an attempt (this is not the asset's fault, the
-                # same reasoning `requeue` already exists for on the halt
-                # path) and move on; the runtime keeps processing the rest
-                # of the batch rather than stopping.
-                self._assets.requeue(asset.immich_id, self._clock.now() + WINDOW_RETRY_DELAY)
-                return WorkerResult(
-                    AssetState.PENDING, reason="deferred: outside the transfer window", deferred=True
-                )
+            local_key = self._assets.media_key_for_checksum(asset.checksum)
+            if local_key:
+                self._assets.mark_synced(asset.immich_id, local_key, Outcome.ALREADY_PRESENT)
+                return WorkerResult(AssetState.SYNCED, Outcome.ALREADY_PRESENT, local_key)
 
-            resolved = self._resolver.resolve(asset)
             try:
-                defer_wait = self._throttle_upload(asset.immich_id, resolved.path)
-                if defer_wait is not None:
-                    # The bandwidth cap would otherwise block this thread for
-                    # longer than MAX_INLINE_THROTTLE_WAIT_SECONDS -- see
-                    # `_throttle_upload`. Hand it back to the queue instead of
-                    # sleeping on it, the same way the schedule-window branch
-                    # above does; not the asset's fault, so no attempt is
-                    # burned. The bucket has already been charged for this
-                    # transfer (`_throttle_prepaid` remembers that), so the
-                    # retry that reclaims it after `defer_wait` must not be
-                    # metered again.
-                    self._assets.requeue(asset.immich_id, self._clock.now() + timedelta(seconds=defer_wait))
+                remote_key = self._gphotos.exists(asset.checksum)
+                if remote_key:
+                    self._assets.mark_synced(asset.immich_id, remote_key, Outcome.ALREADY_PRESENT)
+                    return WorkerResult(AssetState.SYNCED, Outcome.ALREADY_PRESENT, remote_key)
+
+                if not transfer_allowed:
+                    # Neither dedup check cleared it for free -- this asset
+                    # genuinely needs bytes moved. That's the one thing the
+                    # schedule window gates. Hand it back to PENDING without
+                    # counting an attempt (this is not the asset's fault, the
+                    # same reasoning `requeue` already exists for on the halt
+                    # path) and move on; the runtime keeps processing the rest
+                    # of the batch rather than stopping.
+                    #
+                    # Still in flight, so any charge already taken for it
+                    # stands and the retry inside the window must not be
+                    # metered a second time.
+                    retain_prepaid = True
+                    self._assets.requeue(asset.immich_id, self._clock.now() + WINDOW_RETRY_DELAY)
                     return WorkerResult(
-                        AssetState.PENDING,
-                        reason="deferred: bandwidth cap would block the loop too long",
-                        deferred=True,
+                        AssetState.PENDING, reason="deferred: outside the transfer window", deferred=True
                     )
-                media_key = self._gphotos.upload(
-                    resolved.path, checksum=asset.checksum, filename=asset.filename
-                )
-            finally:
-                self._resolver.release(resolved)
 
-            self._assets.mark_synced(asset.immich_id, media_key, Outcome.UPLOADED)
-            return WorkerResult(AssetState.SYNCED, Outcome.UPLOADED, media_key)
+                resolved = self._resolver.resolve(asset)
+                try:
+                    defer_wait = self._throttle_upload(asset.immich_id, resolved.path)
+                    if defer_wait is not None:
+                        # The bandwidth cap would otherwise block this thread
+                        # for longer than MAX_INLINE_THROTTLE_WAIT_SECONDS --
+                        # see `_throttle_upload`. Hand it back to the queue
+                        # instead of sleeping on it, the same way the
+                        # schedule-window branch above does; not the asset's
+                        # fault, so no attempt is burned. The bucket has
+                        # already been charged for this transfer
+                        # (`_throttle_prepaid` remembers that, and this is the
+                        # path that must keep it), so the retry that reclaims
+                        # it after `defer_wait` must not be metered again.
+                        retain_prepaid = True
+                        self._assets.requeue(
+                            asset.immich_id, self._clock.now() + timedelta(seconds=defer_wait)
+                        )
+                        return WorkerResult(
+                            AssetState.PENDING,
+                            reason="deferred: bandwidth cap would block the loop too long",
+                            deferred=True,
+                        )
+                    media_key = self._gphotos.upload(
+                        resolved.path, checksum=asset.checksum, filename=asset.filename
+                    )
+                finally:
+                    self._resolver.release(resolved)
 
-        except GPhotosError as exc:
-            return self._handle_failure(stored, exc.error_class, str(exc))
-        except OSError as exc:
-            return self._handle_failure(stored, ErrorClass.ASSET_UNAVAILABLE, str(exc))
-        except Exception as exc:  # noqa: BLE001 - never let one asset kill the worker
-            # last_error only keeps a 500-char truncated message with no traceback,
-            # so the full exception must be captured here or it is lost forever.
-            logger.exception("unexpected error processing asset %s", asset.immich_id)
-            return self._handle_failure(stored, ErrorClass.UNKNOWN, str(exc))
+                self._assets.mark_synced(asset.immich_id, media_key, Outcome.UPLOADED)
+                return WorkerResult(AssetState.SYNCED, Outcome.UPLOADED, media_key)
+
+            except GPhotosError as exc:
+                return self._handle_failure(stored, exc.error_class, str(exc))
+            except OSError as exc:
+                return self._handle_failure(stored, ErrorClass.ASSET_UNAVAILABLE, str(exc))
+            except Exception as exc:  # noqa: BLE001 - never let one asset kill the worker
+                # last_error only keeps a 500-char truncated message with no traceback,
+                # so the full exception must be captured here or it is lost forever.
+                logger.exception("unexpected error processing asset %s", asset.immich_id)
+                return self._handle_failure(stored, ErrorClass.UNKNOWN, str(exc))
+        finally:
+            # No bucket configured means nothing was ever charged and the
+            # set is always empty, so the uncapped path stays lock-free.
+            if not retain_prepaid and self._bandwidth is not None:
+                with self._throttle_prepaid_lock:
+                    self._throttle_prepaid.discard(asset.immich_id)
 
     def _throttle_upload(self, immich_id: str, path: Path) -> float | None:
         """Make the caller wait its share of the configured upload bandwidth cap,
