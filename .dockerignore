@@ -1,0 +1,10 @@
+.git
+data
+tests
+docs
+.venv
+__pycache__
+.pytest_cache
+.ruff_cache
+.superpowers
+*.egg-info

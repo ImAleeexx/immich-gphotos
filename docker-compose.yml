@@ -1,0 +1,18 @@
+services:
+  immich-gphotos:
+    image: ghcr.io/imaleeexx/immich-gphotos:latest
+    container_name: immich-gphotos
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      IGP_DATA_DIR: /data
+      IGP_LOG_LEVEL: INFO
+    volumes:
+      - ./data:/data
+      # Optional but recommended when Immich runs on this host: with read-only
+      # access to its library, at the SAME path Immich's own container sees it
+      # at (originalPath is stored verbatim, so the path must match exactly),
+      # originals are handed straight to the uploader instead of being
+      # downloaded through the Immich API first.
+      - /path/to/immich/library:/usr/src/app/upload:ro

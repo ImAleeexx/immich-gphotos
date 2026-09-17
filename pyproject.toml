@@ -25,6 +25,12 @@ dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "respx>=0.21", "ruff>=0.7"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# Jinja2 templates are read at runtime from inside the installed package
+# (api/pages.py resolves them relative to __file__), so without this they are
+# silently absent from the built wheel and every page but /healthz breaks.
+immich_gphotos = ["web/templates/*.html", "web/static/**/*"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
