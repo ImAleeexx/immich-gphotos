@@ -5,7 +5,7 @@ import pytest
 import respx
 
 from immich_gphotos.immich.client import HttpImmichClient
-from immich_gphotos.immich.protocol import ImmichAuthError
+from immich_gphotos.immich.protocol import ImmichAuthError, ImmichError
 
 BASE = "https://immich.test"
 
@@ -124,6 +124,35 @@ def test_download_original_writes_the_file(tmp_path):
     dest = tmp_path / "a1.jpg"
     client().download_original("a1", dest)
     assert dest.read_bytes() == b"JPEGBYTES"
+
+
+@respx.mock
+def test_download_original_failure_leaves_no_partial_file_at_dest(tmp_path):
+    # Simulate a connection dropping partway through the body: the mocked
+    # response starts streaming successfully (200) but the byte-iterator
+    # raises mid-body, the same shape a real dropped TCP connection takes.
+    def bad_stream():
+        yield b"PART"
+        raise httpx.ReadError("connection dropped mid-body")
+
+    respx.get(f"{BASE}/api/assets/a1/original").mock(
+        return_value=httpx.Response(200, content=bad_stream())
+    )
+    dest = tmp_path / "a1.jpg"
+    with pytest.raises(ImmichError):
+        client().download_original("a1", dest)
+    assert not dest.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+@respx.mock
+def test_download_original_network_error_raises_immich_error(tmp_path):
+    respx.get(f"{BASE}/api/assets/a1/original").mock(side_effect=httpx.ConnectError("boom"))
+    dest = tmp_path / "a1.jpg"
+    with pytest.raises(ImmichError) as excinfo:
+        client().download_original("a1", dest)
+    assert not isinstance(excinfo.value, ImmichAuthError)
+    assert not dest.exists()
 
 
 @respx.mock

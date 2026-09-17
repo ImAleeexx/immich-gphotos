@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -84,15 +85,30 @@ class HttpImmichClient:
 
     def download_original(self, asset_id: str, dest: Path) -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        with self._client.stream("GET", f"/assets/{asset_id}/original") as response:
-            if response.status_code in (401, 403):
-                raise ImmichAuthError("Immich rejected the API key", response.status_code)
-            if response.status_code >= 400:
-                raise ImmichError(f"download of {asset_id} returned {response.status_code}",
-                                  response.status_code)
-            with dest.open("wb") as handle:
-                for chunk in response.iter_bytes(chunk_size=1024 * 1024):
-                    handle.write(chunk)
+        # Stream to a sibling temp file and atomically replace dest only once the
+        # whole body has landed. A partial file at dest would be indistinguishable
+        # from a complete one to anything that later just checks existence, and
+        # since uploads are keyed on Immich's pre-computed checksum rather than a
+        # hash of the bytes we send, a truncated download becomes a corrupt upload
+        # recorded as "already present" forever.
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        try:
+            with self._client.stream("GET", f"/assets/{asset_id}/original") as response:
+                if response.status_code in (401, 403):
+                    raise ImmichAuthError("Immich rejected the API key", response.status_code)
+                if response.status_code >= 400:
+                    raise ImmichError(f"download of {asset_id} returned {response.status_code}",
+                                      response.status_code)
+                with tmp.open("wb") as handle:
+                    for chunk in response.iter_bytes(chunk_size=1024 * 1024):
+                        handle.write(chunk)
+            os.replace(tmp, dest)
+        except httpx.HTTPError as exc:
+            tmp.unlink(missing_ok=True)
+            raise ImmichError(f"download of {asset_id} failed: {exc}") from exc
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def list_albums(self) -> list[ImmichAlbum]:
         return [
