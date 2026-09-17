@@ -48,3 +48,46 @@ def test_every_template_class_is_defined_in_app_css():
     defined = _classes_defined_in_css()
     missing = used - defined
     assert not missing, f"classes referenced by templates but not defined in app.css: {sorted(missing)}"
+
+
+def test_reduced_motion_block_is_last_in_app_css():
+    """The `prefers-reduced-motion: reduce` block must stay last in app.css.
+
+    Its `*, *::before, *::after` rules carry `!important`, so those three
+    always win regardless of source order -- but `.btn:hover`/`.btn:active`
+    inside the same block does not carry `!important`, so it only wins if
+    the block is the last thing in the file. A rule appended after it that
+    targets the same selector with equal specificity would silently defeat
+    reduced-motion for that rule. This test only checks placement; it can't
+    catch a rule inserted *before* the block that defeats it by other means.
+    """
+    css = APP_CSS.read_text()
+
+    starts = [m.start() for m in re.finditer(r"@media\s*\(prefers-reduced-motion", css)]
+    assert starts, "app.css has no @media (prefers-reduced-motion ...) block"
+    last_start = starts[-1]
+
+    # Walk forward from the block's own opening brace, matching braces, to
+    # find where this block actually ends.
+    open_brace = css.index("{", last_start)
+    depth = 0
+    end = None
+    for i, ch in enumerate(css[open_brace:], start=open_brace):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    assert end is not None, "unbalanced braces in the reduced-motion block"
+
+    trailing = css[end:]
+    # Comments are allowed to follow (e.g. none currently do, but a trailing
+    # file-end comment shouldn't count as "more CSS"); actual rules are not.
+    trailing_without_comments = re.sub(r"/\*.*?\*/", "", trailing, flags=re.DOTALL)
+    assert not trailing_without_comments.strip(), (
+        "the last @media (prefers-reduced-motion ...) block must be the very "
+        "last rule in app.css so it always wins; found more CSS after it: "
+        f"{trailing_without_comments.strip()[:200]!r}"
+    )

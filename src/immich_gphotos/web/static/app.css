@@ -971,27 +971,10 @@ textarea:focus {
   width: 100%;
 }
 
-/* Reduced motion -- last in the file so it wins. */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
-  .btn:hover,
-  .btn:active {
-    transform: none;
-  }
-}
-
 /* ---------------------------------------------------------------------------
    Setup wizard -- step rail, checkmark draw, ADB shell switcher.
-   Appended for the resumable-stepper rewrite; the reduced-motion block above
-   still wins for every animation here, since its rules carry !important and
-   apply regardless of source order.
+   Appended for the resumable-stepper rewrite. The reduced-motion block now
+   lives at the true end of this file, after these rules, so it still wins.
 --------------------------------------------------------------------------- */
 
 .wizard {
@@ -1178,5 +1161,21 @@ textarea:focus {
 
   .step {
     flex: 0 0 auto;
+  }
+}
+
+/* Reduced motion -- last in the file so it wins. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .btn:hover,
+  .btn:active {
+    transform: none;
   }
 }
