@@ -1,29 +1,102 @@
 {% extends "base.html" %}
 {% set nav_active = "failures" %}
+{% block page_title %}Failures · immich-gphotos{% endblock %}
 {% block content %}
 <h1>Failures</h1>
-<table>
-  <thead>
-    <tr><th>Filename</th><th>Attempts</th><th>Error</th><th>Message</th><th></th></tr>
-  </thead>
-  <tbody id="rows"><tr><td colspan="5">Loading…</td></tr></tbody>
-</table>
+<p>Assets that exhausted their retries during transfer. Retry one once the
+   underlying problem is fixed.</p>
+<div class="panel">
+  <table class="table">
+    <thead>
+      <tr><th>Filename</th><th>Attempts</th><th>Error</th><th>Message</th><th></th></tr>
+    </thead>
+    <tbody id="rows">
+      <tr><td colspan="5"><span class="skeleton" style="display:block;height:1.2em;width:60%"></span></td></tr>
+      <tr><td colspan="5"><span class="skeleton" style="display:block;height:1.2em;width:45%"></span></td></tr>
+      <tr><td colspan="5"><span class="skeleton" style="display:block;height:1.2em;width:70%"></span></td></tr>
+    </tbody>
+  </table>
+</div>
 <script>
-  function cell(text) {
+  function cell(text, className) {
     const td = document.createElement("td");
+    if (className) td.className = className;
     td.textContent = text;
     return td;
   }
 
+  function emptyRow() {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 5;
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    const icon = document.createElement("p");
+    icon.className = "empty__code";
+    icon.textContent = "✓";
+    const title = document.createElement("p");
+    title.textContent = "No failures.";
+    const hint = document.createElement("p");
+    hint.className = "field__hint";
+    hint.textContent = "Assets appear here only after they have exhausted their retries.";
+    empty.appendChild(icon);
+    empty.appendChild(title);
+    empty.appendChild(hint);
+    td.appendChild(empty);
+    tr.appendChild(td);
+    return tr;
+  }
+
+  function errorRow() {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 5;
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    const title = document.createElement("p");
+    title.textContent = "Could not load failures.";
+    const hint = document.createElement("p");
+    hint.className = "field__hint";
+    hint.textContent = "Check diagnostics, or reload this page to try again.";
+    empty.appendChild(title);
+    empty.appendChild(hint);
+    td.appendChild(empty);
+    tr.appendChild(td);
+    return tr;
+  }
+
+  async function retry(button, id, filename) {
+    button.disabled = true;
+    const original = button.textContent;
+    button.textContent = "Retrying…";
+    try {
+      const response = await fetch(`/api/failures/${encodeURIComponent(id)}/retry`, { method: "POST" });
+      if (!response.ok) throw new Error("retry failed");
+      window.igp.toast("Retrying " + filename + ".");
+      load();
+    } catch (err) {
+      window.igp.toast("Could not retry " + filename + ".", { tone: "danger" });
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
+
   async function load() {
     const rows = document.getElementById("rows");
-    const failures = await (await fetch("/api/failures")).json();
+    let failures;
+    try {
+      const response = await fetch("/api/failures");
+      if (!response.ok) throw new Error("bad status");
+      failures = await response.json();
+    } catch (err) {
+      rows.replaceChildren(errorRow());
+      window.igp.toast("Could not load failures.", { tone: "danger" });
+      return;
+    }
+
     rows.replaceChildren();
     if (!failures.length) {
-      const tr = document.createElement("tr");
-      tr.appendChild(cell("No failures."));
-      tr.lastChild.colSpan = 5;
-      rows.appendChild(tr);
+      rows.appendChild(emptyRow());
       return;
     }
     for (const f of failures) {
@@ -32,20 +105,32 @@
       // field here goes through textContent, never innerHTML.
       const tr = document.createElement("tr");
       tr.appendChild(cell(f.filename));
-      tr.appendChild(cell(f.attempts));
-      tr.appendChild(cell(f.error_class ?? "-"));
-      tr.appendChild(cell(f.last_error ?? "-"));
+      tr.appendChild(cell(f.attempts, "num"));
+
+      const errorTd = document.createElement("td");
+      if (f.error_class) {
+        const pill = document.createElement("span");
+        pill.className = "pill--danger";
+        pill.textContent = f.error_class;
+        errorTd.appendChild(pill);
+      } else {
+        errorTd.textContent = "-";
+      }
+      tr.appendChild(errorTd);
+
+      const messageTd = document.createElement("td");
+      messageTd.className = "cell--wrap";
+      const messageText = f.last_error ?? "-";
+      messageTd.textContent = messageText;
+      messageTd.title = messageText;
+      tr.appendChild(messageTd);
 
       const actionTd = document.createElement("td");
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "retry";
+      button.className = "btn btn--ghost btn--sm";
       button.textContent = "Retry";
-      button.dataset.id = f.immich_id;
-      button.addEventListener("click", async () => {
-        await fetch(`/api/failures/${encodeURIComponent(button.dataset.id)}/retry`, { method: "POST" });
-        load();
-      });
+      button.addEventListener("click", () => retry(button, f.immich_id, f.filename));
       actionTd.appendChild(button);
       tr.appendChild(actionTd);
 

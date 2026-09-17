@@ -1,15 +1,78 @@
 {% extends "base.html" %}
 {% set show_chrome = false %}
+{% block page_title %}Sign in · immich-gphotos{% endblock %}
 {% block content %}
-<form method="post" action="/login" class="card">
-  {% if first_run %}
-    <h1>Welcome</h1>
-    <p>Set a password to protect this dashboard. It stores your Google and Immich
-       credentials, so it is not left open.</p>
-  {% else %}
-    <h1>Sign in</h1>
-  {% endif %}
-  <input type="password" name="password" autofocus required>
-  <button type="submit">{{ "Set password" if first_run else "Sign in" }}</button>
-</form>
+<style>
+  .login {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-5);
+    max-width: 26rem;
+    margin-inline: auto;
+    padding-block: var(--space-7) var(--space-8);
+  }
+
+  .login__brand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .login__brand .brand__mark {
+    width: 28px;
+    height: 28px;
+    color: var(--accent);
+  }
+
+  .login__panel {
+    width: 100%;
+  }
+
+  .login__panel form {
+    display: grid;
+  }
+
+  .login__panel p {
+    color: var(--text-muted);
+  }
+
+  .login__submit {
+    width: 100%;
+  }
+</style>
+<div class="login stagger">
+  <div class="login__brand">
+    <svg class="brand__mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+      <rect x="6.5" y="6.5" width="14" height="14" rx="3.5" fill="none"
+            stroke="currentColor" stroke-width="2.25"/>
+      <rect x="11.5" y="11.5" width="14" height="14" rx="3.5" fill="none"
+            stroke="currentColor" stroke-width="2.25" opacity="0.45"/>
+    </svg>
+    <span>immich-gphotos</span>
+  </div>
+  <div class="panel login__panel">
+    <form method="post" action="/login">
+      {% if first_run %}
+      <h1>Welcome</h1>
+      <p>Set a password to protect this dashboard. It stores your Google and Immich
+         credentials, so it should not be left open.</p>
+      {% else %}
+      <h1>Sign in</h1>
+      <p>Enter your password to continue.</p>
+      {% endif %}
+      <label class="field">
+        <span class="field__label">Password</span>
+        <input class="input" type="password" name="password"
+               autocomplete="{{ 'new-password' if first_run else 'current-password' }}"
+               autofocus required>
+      </label>
+      <button type="submit" class="btn btn--primary login__submit">
+        {{ "Set a password" if first_run else "Sign in" }}
+      </button>
+    </form>
+  </div>
+</div>
 {% endblock %}
