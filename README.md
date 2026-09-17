@@ -116,6 +116,26 @@ automatically to downloading the original through the Immich API into a
 scratch directory, uploading it, then deleting the scratch copy. Nothing
 breaks without the mount — it's a performance path, not a requirement.
 
+Set `IGP_ALLOW_DIRECT_READS=false` to force the API-download path even when
+the mount is present — useful for confirming the fallback still works, or if
+the mounted path is present but not trustworthy for some reason (e.g. it's a
+stale snapshot rather than Immich's live library).
+
+## Environment variables
+
+Everything below is optional and has a working default; none of them ever
+holds a credential — Immich and Google credentials live only in the database
+under `IGP_DATA_DIR`, entered through the setup wizard.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `IGP_DATA_DIR` | `/data` | Where the SQLite database (and, unless overridden, the scratch directory) live. |
+| `IGP_LOG_LEVEL` | `INFO` | Log verbosity. |
+| `IGP_HOST` | `0.0.0.0` | Address the web server binds to. |
+| `IGP_PORT` | `8080` | Port the web server listens on. |
+| `IGP_ALLOW_DIRECT_READS` | `true` | Set to `false` to always download originals through the Immich API instead of reading a mounted library directly (see above). |
+| `IGP_SCRATCH_DIR` | `<IGP_DATA_DIR>/scratch` | Where originals are staged when the direct-read path isn't used. |
+
 ## Monitoring
 
 - `GET /healthz` — liveness only, unauthenticated, used by the image's own

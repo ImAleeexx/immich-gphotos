@@ -8,6 +8,10 @@ services:
     environment:
       IGP_DATA_DIR: /data
       IGP_LOG_LEVEL: INFO
+      # Uncomment to always download originals through the Immich API instead
+      # of reading the mount below directly (e.g. to test the fallback, or if
+      # the mount is present but shouldn't be trusted as the live library):
+      # IGP_ALLOW_DIRECT_READS: "false"
     volumes:
       - ./data:/data
       # Optional but recommended when Immich runs on this host: with read-only
