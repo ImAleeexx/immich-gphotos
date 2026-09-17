@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Settings</h1>
+<form id="settings-form" class="card">
+  <label>Quality
+    <select name="quality">
+      <option value="original">Original</option>
+      <option value="saver">Storage saver</option>
+      <option value="quota">Quota-friendly</option>
+    </select>
+  </label>
+  <label><input type="checkbox" name="albums_enabled"> Sync albums</label>
+  <label><input type="checkbox" name="deletions_enabled"> Propagate deletions</label>
+  <label>Worker threads
+    <input type="number" name="worker_threads" min="1" max="16">
+  </label>
+  <label>Bandwidth (bytes/sec, blank = unlimited)
+    <input type="number" name="bandwidth_bytes_per_second" min="0">
+  </label>
+  <button type="submit">Save</button>
+</form>
+<script>
+  const form = document.getElementById("settings-form");
+
+  async function load() {
+    const s = await (await fetch("/api/settings")).json();
+    form.quality.value = s.quality;
+    form.albums_enabled.checked = s.albums_enabled;
+    form.deletions_enabled.checked = s.deletions_enabled;
+    form.worker_threads.value = s.worker_threads;
+    form.bandwidth_bytes_per_second.value = s.bandwidth_bytes_per_second ?? "";
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const body = {
+      quality: form.quality.value,
+      albums_enabled: form.albums_enabled.checked,
+      deletions_enabled: form.deletions_enabled.checked,
+      worker_threads: Number(form.worker_threads.value),
+      bandwidth_bytes_per_second: form.bandwidth_bytes_per_second.value
+        ? Number(form.bandwidth_bytes_per_second.value)
+        : null,
+    };
+    await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    load();
+  });
+
+  load();
+</script>
+{% endblock %}

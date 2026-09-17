@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Dashboard</h1>
+<div id="pause-banner" class="banner hidden"></div>
+<section class="cards">
+  <div class="card"><span id="c-pending">-</span><label>Pending</label></div>
+  <div class="card"><span id="c-synced">-</span><label>Synced</label></div>
+  <div class="card"><span id="c-failed">-</span><label>Failed</label></div>
+  <div class="card"><span id="c-quarantined">-</span><label>Quarantined</label></div>
+</section>
+<section class="card">
+  <h2>Backfill</h2>
+  <p id="backfill-status">-</p>
+</section>
+<section class="card">
+  <h2>Recent activity</h2>
+  <ul id="activity"></ul>
+</section>
+<script>
+  const source = new EventSource("/events");
+  source.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    const counts = data.counts || {};
+    document.getElementById("c-pending").textContent = counts.pending ?? 0;
+    document.getElementById("c-synced").textContent = counts.synced ?? 0;
+    document.getElementById("c-failed").textContent = counts.failed ?? 0;
+    document.getElementById("c-quarantined").textContent = counts.quarantined ?? 0;
+
+    const banner = document.getElementById("pause-banner");
+    if (data.paused_reason) {
+      banner.textContent = "Paused: " + data.paused_reason;
+      banner.classList.remove("hidden");
+    } else {
+      banner.classList.add("hidden");
+    }
+
+    const backfill = data.backfill || {};
+    document.getElementById("backfill-status").textContent = backfill.running
+      ? "Running (resuming from page " + backfill.page + ")"
+      : "Not running";
+
+    const activity = document.getElementById("activity");
+    const item = document.createElement("li");
+    item.textContent = new Date().toLocaleTimeString() + " - status refreshed";
+    activity.prepend(item);
+    while (activity.children.length > 20) {
+      activity.removeChild(activity.lastChild);
+    }
+  };
+</script>
+{% endblock %}

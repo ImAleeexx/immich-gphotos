@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>immich-gphotos</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #1a1d24;
+      --text: #e6e8eb;
+      --muted: #9aa1ac;
+      --accent: #4f8cff;
+      --border: #2a2e37;
+      --warn: #b45309;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+    }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      margin-right: 1.25rem;
+      font-size: 0.9rem;
+    }
+    nav a:hover { color: var(--text); }
+    main { padding: 1.5rem; max-width: 960px; margin: 0 auto; }
+    h1 { margin-top: 0; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+    }
+    .cards { display: flex; gap: 1rem; flex-wrap: wrap; }
+    .cards .card { flex: 1; min-width: 120px; text-align: center; }
+    .cards .card span { display: block; font-size: 1.8rem; font-weight: 600; }
+    .cards .card label { color: var(--muted); font-size: 0.8rem; }
+    .banner { background: var(--warn); color: #fff; padding: 0.5rem 1rem; border-radius: 6px; margin-bottom: 1rem; }
+    .hidden { display: none; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+    input, button, select { font: inherit; }
+    input[type="password"], input[type="number"], select {
+      background: var(--panel); border: 1px solid var(--border); color: var(--text);
+      border-radius: 6px; padding: 0.5rem; width: 100%; margin: 0.5rem 0;
+    }
+    button {
+      background: var(--accent); color: #fff; border: none; border-radius: 6px;
+      padding: 0.5rem 1rem; cursor: pointer;
+    }
+    form.card { max-width: 320px; margin: 3rem auto; }
+    ul#activity { list-style: none; padding: 0; font-size: 0.85rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/failures">Failures</a>
+      <a href="/settings">Settings</a>
+      <a href="/diagnostics">Diagnostics</a>
+    </nav>
+    <form method="post" action="/logout">
+      <button type="submit">Sign out</button>
+    </form>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Diagnostics</h1>
+<h2>Recent events</h2>
+<table>
+  <thead><tr><th>Time</th><th>Level</th><th>Message</th></tr></thead>
+  <tbody>
+    {% for e in events %}
+    <tr><td>{{ e.ts }}</td><td>{{ e.level }}</td><td>{{ e.message }}</td></tr>
+    {% else %}
+    <tr><td colspan="3">No events yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+<h2>Immich workflow logs</h2>
+<table>
+  <thead><tr><th>Log line</th></tr></thead>
+  <tbody>
+    {% for line in workflow_logs %}
+    <tr><td>{{ line }}</td></tr>
+    {% else %}
+    <tr><td>No workflow configured, or no logs are available yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

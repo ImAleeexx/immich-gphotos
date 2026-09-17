@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from immich_gphotos.api.app import create_app
+from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
 from immich_gphotos.clock import FakeClock
 from immich_gphotos.config import Settings
 from immich_gphotos.models import Asset, AssetState, ErrorClass, Outcome, Priority
@@ -37,17 +38,25 @@ def rig(tmp_path):
     conn = connect(tmp_path / "t.db")
     clock = FakeClock()
     assets = AssetRepo(conn, clock)
+    settings_repo = SettingRepo(conn)
     services = Services(
         assets=assets,
         albums=AlbumRepo(conn),
         cursors=CursorRepo(conn),
-        settings_repo=SettingRepo(conn),
+        settings_repo=settings_repo,
         events=EventRepo(conn, clock),
         runtime=StubRuntime(),
         settings=Settings(),
         webhook_secret="s",
     )
-    return TestClient(create_app(services)), assets, services
+    # Task 20 adds a session-protected middleware ahead of these routes; log
+    # in once here so the pre-existing Task 19 tests keep exercising the same
+    # unauthenticated-request-shaped assertions against an authenticated client.
+    settings_repo.set(PASSWORD_KEY, hash_password("test-password"))
+    http = TestClient(create_app(services), follow_redirects=False)
+    login_response = http.post("/login", data={"password": "test-password"})
+    assert login_response.status_code == 303
+    return http, assets, services
 
 
 def test_status_reports_counts_and_pause_state(rig):
