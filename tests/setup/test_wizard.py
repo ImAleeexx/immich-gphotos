@@ -1,8 +1,9 @@
 from immich_gphotos.gphotos.fake import FakeGooglePhotosClient
 from immich_gphotos.gphotos.protocol import GPhotosError
 from immich_gphotos.immich.fake import FakeImmichClient
+from immich_gphotos.immich.protocol import ImmichError
 from immich_gphotos.models import ErrorClass
-from immich_gphotos.setup.wizard import REQUIRED_PERMISSIONS, Wizard
+from immich_gphotos.setup.wizard import CORE_PERMISSIONS, REQUIRED_PERMISSIONS, Wizard
 
 
 def test_a_fully_configured_immich_passes():
@@ -21,7 +22,10 @@ def test_missing_permissions_are_named_not_just_counted():
 
 
 def test_immich_below_v3_degrades_to_reconciler_only_instead_of_failing():
-    client = FakeImmichClient(permissions=set(REQUIRED_PERMISSIONS), version=(2, 9, 0))
+    # A pre-3.0 server has no workflow system, so a key on it can only ever
+    # carry the core permissions -- the workflow.* / plugin.read scopes don't
+    # exist to grant. This is the realistic configuration for this version.
+    client = FakeImmichClient(permissions=set(CORE_PERMISSIONS), version=(2, 9, 0))
     check = Wizard().check_immich(client)
     assert check.ok is True
     assert check.event_driven is False
@@ -33,6 +37,19 @@ def test_a_server_without_the_webhook_method_is_not_offered_a_workflow():
     check = Wizard().check_immich(client)
     assert check.webhook_method_present is False
     assert check.event_driven is False
+
+
+def test_plugin_method_keys_failure_degrades_instead_of_propagating():
+    class Failing(FakeImmichClient):
+        def plugin_method_keys(self) -> set[str]:
+            raise ImmichError("plugin listing endpoint returned 500")
+
+    client = Failing(permissions=set(REQUIRED_PERMISSIONS))
+    check = Wizard().check_immich(client)
+    assert check.webhook_method_present is False
+    assert check.event_driven is False
+    assert check.ok is True
+    assert check.missing_permissions == set()
 
 
 def test_google_check_uses_a_hash_that_cannot_exist():

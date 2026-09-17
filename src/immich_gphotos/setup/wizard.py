@@ -4,13 +4,21 @@ from dataclasses import dataclass, field
 from immich_gphotos.gphotos.protocol import GooglePhotosClient, GPhotosError
 from immich_gphotos.immich.protocol import ImmichClient, ImmichError
 
-REQUIRED_PERMISSIONS = frozenset(
+# Required on every Immich server, regardless of version: the workflow system
+# doesn't exist below 3.0, so its permission scopes can't be granted there either.
+CORE_PERMISSIONS = frozenset(
     {
         "asset.read",
         "asset.download",
         "album.read",
         "album.create",
         "albumAsset.create",
+    }
+)
+
+# Only required when the server supports workflows (version >= 3.0).
+WORKFLOW_PERMISSIONS = frozenset(
+    {
         "workflow.create",
         "workflow.read",
         "workflow.update",
@@ -19,6 +27,11 @@ REQUIRED_PERMISSIONS = frozenset(
         "plugin.read",
     }
 )
+
+# Exported as the union for contract tests that check these names against
+# Immich's published permission enum. check_immich only requires the
+# workflow subset when the server actually supports workflows.
+REQUIRED_PERMISSIONS = CORE_PERMISSIONS | WORKFLOW_PERMISSIONS
 
 WEBHOOK_METHOD = "immich-plugin-core#webhook"
 
@@ -52,8 +65,9 @@ class Wizard:
         except ImmichError as exc:
             return ImmichCheck(ok=False, message=str(exc))
 
-        missing = set(REQUIRED_PERMISSIONS) - granted
         supports_workflows = version >= (3, 0, 0)
+        required = CORE_PERMISSIONS | WORKFLOW_PERMISSIONS if supports_workflows else CORE_PERMISSIONS
+        missing = required - granted
 
         webhook_present = False
         if supports_workflows:
@@ -62,7 +76,8 @@ class Wizard:
             except ImmichError:
                 webhook_present = False
 
-        event_driven = supports_workflows and webhook_present
+        workflow_permissions_present = not (WORKFLOW_PERMISSIONS - granted)
+        event_driven = supports_workflows and webhook_present and workflow_permissions_present
         if not supports_workflows:
             message = (
                 f"Immich {version[0]}.{version[1]} has no workflow system; running in reconciler-only mode."
