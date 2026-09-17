@@ -61,6 +61,50 @@ def test_upsert_does_not_downgrade_priority(repo):
     assert r.get("a1").priority is Priority.WEBHOOK
 
 
+def test_concurrent_upsert_same_id_does_not_raise(repo):
+    """Concurrent callers registering the same brand-new immich_id must not raise IntegrityError.
+
+    This is the most likely concurrent path: webhook receiver and reconciler discovering
+    the same asset independently. Both would see no existing row and try to insert,
+    causing IntegrityError before the fix.
+    """
+    import threading
+
+    r, _ = repo
+    asset_id = "concurrent_asset"
+    exceptions = []
+    results = []
+
+    def upsert_with_priority(priority):
+        try:
+            result = r.upsert_pending(make_asset(asset_id), priority)
+            results.append(result)
+        except Exception as e:
+            exceptions.append(e)
+
+    # Launch 5 threads trying to upsert the same asset concurrently
+    # Some with WEBHOOK priority (higher priority, lower number), some with BACKFILL
+    threads = [
+        threading.Thread(target=upsert_with_priority, args=(Priority.WEBHOOK,)) for _ in range(3)
+    ] + [threading.Thread(target=upsert_with_priority, args=(Priority.BACKFILL,)) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # No exceptions should have been raised
+    assert exceptions == [], f"Exceptions occurred: {exceptions}"
+
+    # All calls to a non-terminal row should return True
+    assert all(results), f"Some results were False: {results}"
+
+    # Exactly one row should exist with the higher priority (WEBHOOK)
+    stored = r.get(asset_id)
+    assert stored is not None
+    assert stored.asset.immich_id == asset_id
+    assert stored.priority == Priority.WEBHOOK
+
+
 def test_upsert_skips_assets_already_terminal(repo):
     r, _ = repo
     r.upsert_pending(make_asset(), Priority.WEBHOOK)

@@ -42,6 +42,7 @@ class AssetRepo:
         self._conn = conn
         self._clock = clock
         self._claim_lock = threading.Lock()
+        self._upsert_lock = threading.Lock()
 
     def upsert_pending(self, asset: Asset, priority: Priority) -> bool:
         """Enqueue an asset. Returns False if it is already in a terminal state.
@@ -50,61 +51,42 @@ class AssetRepo:
         backfill already queued must jump the queue, not sink into it.
         """
         now = self._clock.now().isoformat()
-        existing = self._conn.execute(
-            "SELECT state, priority FROM asset WHERE immich_id = ?", (asset.immich_id,)
-        ).fetchone()
-        if existing and AssetState(existing["state"]).is_terminal():
-            # Still refresh trashed/visibility: the deletion sweeper watches for a
-            # synced asset becoming trashed, and would never see it otherwise.
-            self._conn.execute(
-                "UPDATE asset SET is_trashed = ?, visibility = ?, immich_updated_at = ?"
-                " WHERE immich_id = ?",
+        with self._upsert_lock:
+            row = self._conn.execute(
+                "INSERT INTO asset (immich_id, checksum, filename, type, size_bytes,"
+                " immich_updated_at, original_path, visibility, is_offline, is_trashed, tags,"
+                " state, priority, first_seen_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(immich_id) DO UPDATE SET"
+                "  state = state,"
+                "  priority = CASE"
+                "    WHEN state IN ('SYNCED', 'INELIGIBLE', 'FAILED') THEN priority"
+                "    ELSE MIN(priority, excluded.priority)"
+                "  END,"
+                "  is_trashed = excluded.is_trashed,"
+                "  visibility = excluded.visibility,"
+                "  immich_updated_at = excluded.immich_updated_at,"
+                "  is_offline = excluded.is_offline,"
+                "  tags = excluded.tags"
+                " RETURNING state",
                 (
-                    int(asset.is_trashed),
-                    asset.visibility,
-                    asset.immich_updated_at,
                     asset.immich_id,
-                ),
-            )
-            return False
-        if existing:
-            self._conn.execute(
-                "UPDATE asset SET priority = MIN(priority, ?), immich_updated_at = ?,"
-                " visibility = ?, is_trashed = ?, is_offline = ?, tags = ? WHERE immich_id = ?",
-                (
-                    int(priority),
+                    asset.checksum,
+                    asset.filename,
+                    asset.type,
+                    asset.size_bytes,
                     asset.immich_updated_at,
+                    asset.original_path,
                     asset.visibility,
-                    int(asset.is_trashed),
                     int(asset.is_offline),
+                    int(asset.is_trashed),
                     json.dumps(list(asset.tags)),
-                    asset.immich_id,
+                    AssetState.PENDING.value,
+                    int(priority),
+                    now,
                 ),
-            )
-            return True
-        self._conn.execute(
-            "INSERT INTO asset (immich_id, checksum, filename, type, size_bytes,"
-            " immich_updated_at, original_path, visibility, is_offline, is_trashed, tags,"
-            " state, priority, first_seen_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                asset.immich_id,
-                asset.checksum,
-                asset.filename,
-                asset.type,
-                asset.size_bytes,
-                asset.immich_updated_at,
-                asset.original_path,
-                asset.visibility,
-                int(asset.is_offline),
-                int(asset.is_trashed),
-                json.dumps(list(asset.tags)),
-                AssetState.PENDING.value,
-                int(priority),
-                now,
-            ),
-        )
-        return True
+            ).fetchone()
+        return not AssetState(row["state"]).is_terminal()
 
     def claim_next(self, limit: int = 1) -> list[StoredAsset]:
         now = self._clock.now().isoformat()
