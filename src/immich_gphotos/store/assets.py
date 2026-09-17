@@ -206,6 +206,23 @@ class AssetRepo:
                 [(AssetState.INELIGIBLE.value, i) for i in ids],
             )
 
+    def failures(self, limit: int = 200) -> list[StoredAsset]:
+        with self._conn.lock:
+            rows = self._conn.execute(
+                "SELECT * FROM asset WHERE state = ? ORDER BY first_seen_at DESC LIMIT ?",
+                (AssetState.FAILED.value, limit),
+            ).fetchall()
+        return [_row_to_stored(r) for r in rows]
+
+    def retry_now(self, immich_id: str) -> bool:
+        with self._conn.lock:
+            cur = self._conn.execute(
+                "UPDATE asset SET state = ?, attempts = 0, next_attempt_at = NULL,"
+                " error_class = NULL, last_error = NULL WHERE immich_id = ? AND state = ?",
+                (AssetState.PENDING.value, immich_id, AssetState.FAILED.value),
+            )
+        return cur.rowcount > 0
+
     def requeue_stale_uploading(self, older_than: timedelta) -> int:
         """Recover rows a crash left claimed."""
         cutoff = (self._clock.now() - older_than).isoformat()
