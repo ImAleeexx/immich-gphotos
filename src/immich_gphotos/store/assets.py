@@ -1,0 +1,192 @@
+import json
+import sqlite3
+import threading
+from datetime import datetime, timedelta
+
+from immich_gphotos.clock import Clock
+from immich_gphotos.models import Asset, AssetState, ErrorClass, Outcome, Priority, StoredAsset
+
+
+def _row_to_stored(row: sqlite3.Row) -> StoredAsset:
+    asset = Asset(
+        immich_id=row["immich_id"],
+        checksum=row["checksum"],
+        filename=row["filename"],
+        type=row["type"],
+        size_bytes=row["size_bytes"],
+        immich_updated_at=row["immich_updated_at"],
+        original_path=row["original_path"],
+        visibility=row["visibility"],
+        is_offline=bool(row["is_offline"]),
+        is_trashed=bool(row["is_trashed"]),
+        tags=tuple(json.loads(row["tags"])),
+    )
+    return StoredAsset(
+        asset=asset,
+        state=AssetState(row["state"]),
+        outcome=Outcome(row["outcome"]) if row["outcome"] else None,
+        media_key=row["media_key"],
+        priority=Priority(row["priority"]),
+        attempts=row["attempts"],
+        next_attempt_at=row["next_attempt_at"],
+        error_class=ErrorClass(row["error_class"]) if row["error_class"] else None,
+        last_error=row["last_error"],
+        ineligible_reason=row["ineligible_reason"],
+    )
+
+
+class AssetRepo:
+    """The asset table is also the work queue."""
+
+    def __init__(self, conn: sqlite3.Connection, clock: Clock) -> None:
+        self._conn = conn
+        self._clock = clock
+        self._claim_lock = threading.Lock()
+
+    def upsert_pending(self, asset: Asset, priority: Priority) -> bool:
+        """Enqueue an asset. Returns False if it is already in a terminal state.
+
+        Never downgrades an existing priority: a webhook arriving for an asset the
+        backfill already queued must jump the queue, not sink into it.
+        """
+        now = self._clock.now().isoformat()
+        existing = self._conn.execute(
+            "SELECT state, priority FROM asset WHERE immich_id = ?", (asset.immich_id,)
+        ).fetchone()
+        if existing and AssetState(existing["state"]).is_terminal():
+            # Still refresh trashed/visibility: the deletion sweeper watches for a
+            # synced asset becoming trashed, and would never see it otherwise.
+            self._conn.execute(
+                "UPDATE asset SET is_trashed = ?, visibility = ?, immich_updated_at = ?"
+                " WHERE immich_id = ?",
+                (
+                    int(asset.is_trashed),
+                    asset.visibility,
+                    asset.immich_updated_at,
+                    asset.immich_id,
+                ),
+            )
+            return False
+        if existing:
+            self._conn.execute(
+                "UPDATE asset SET priority = MIN(priority, ?), immich_updated_at = ?,"
+                " visibility = ?, is_trashed = ?, is_offline = ?, tags = ? WHERE immich_id = ?",
+                (
+                    int(priority),
+                    asset.immich_updated_at,
+                    asset.visibility,
+                    int(asset.is_trashed),
+                    int(asset.is_offline),
+                    json.dumps(list(asset.tags)),
+                    asset.immich_id,
+                ),
+            )
+            return True
+        self._conn.execute(
+            "INSERT INTO asset (immich_id, checksum, filename, type, size_bytes,"
+            " immich_updated_at, original_path, visibility, is_offline, is_trashed, tags,"
+            " state, priority, first_seen_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                asset.immich_id,
+                asset.checksum,
+                asset.filename,
+                asset.type,
+                asset.size_bytes,
+                asset.immich_updated_at,
+                asset.original_path,
+                asset.visibility,
+                int(asset.is_offline),
+                int(asset.is_trashed),
+                json.dumps(list(asset.tags)),
+                AssetState.PENDING.value,
+                int(priority),
+                now,
+            ),
+        )
+        return True
+
+    def claim_next(self, limit: int = 1) -> list[StoredAsset]:
+        now = self._clock.now().isoformat()
+        with self._claim_lock:
+            rows = self._conn.execute(
+                "UPDATE asset SET state = ?, claimed_at = ? WHERE immich_id IN ("
+                "  SELECT immich_id FROM asset WHERE state = ?"
+                "   AND (next_attempt_at IS NULL OR next_attempt_at <= ?)"
+                "   ORDER BY priority ASC, first_seen_at ASC LIMIT ?"
+                ") RETURNING *",
+                (AssetState.UPLOADING.value, now, AssetState.PENDING.value, now, limit),
+            ).fetchall()
+        return [_row_to_stored(r) for r in rows]
+
+    def mark_synced(self, immich_id: str, media_key: str, outcome: Outcome) -> None:
+        self._conn.execute(
+            "UPDATE asset SET state = ?, outcome = ?, media_key = ?, synced_at = ?,"
+            " error_class = NULL, last_error = NULL, claimed_at = NULL WHERE immich_id = ?",
+            (AssetState.SYNCED.value, outcome.value, media_key, self._clock.now().isoformat(), immich_id),
+        )
+
+    def mark_ineligible(self, immich_id: str, reason: str) -> None:
+        self._conn.execute(
+            "UPDATE asset SET state = ?, ineligible_reason = ?, claimed_at = NULL WHERE immich_id = ?",
+            (AssetState.INELIGIBLE.value, reason, immich_id),
+        )
+
+    def mark_retry(
+        self, immich_id: str, error_class: ErrorClass, message: str, next_attempt_at: datetime
+    ) -> None:
+        self._conn.execute(
+            "UPDATE asset SET state = ?, attempts = attempts + 1, next_attempt_at = ?,"
+            " error_class = ?, last_error = ?, claimed_at = NULL WHERE immich_id = ?",
+            (
+                AssetState.PENDING.value,
+                next_attempt_at.isoformat(),
+                error_class.value,
+                message[:500],
+                immich_id,
+            ),
+        )
+
+    def mark_failed(self, immich_id: str, error_class: ErrorClass, message: str) -> None:
+        self._conn.execute(
+            "UPDATE asset SET state = ?, attempts = attempts + 1, error_class = ?,"
+            " last_error = ?, claimed_at = NULL WHERE immich_id = ?",
+            (AssetState.FAILED.value, error_class.value, message[:500], immich_id),
+        )
+
+    def get(self, immich_id: str) -> StoredAsset | None:
+        row = self._conn.execute("SELECT * FROM asset WHERE immich_id = ?", (immich_id,)).fetchone()
+        return _row_to_stored(row) if row else None
+
+    def counts_by_state(self) -> dict[str, int]:
+        rows = self._conn.execute("SELECT state, COUNT(*) AS n FROM asset GROUP BY state").fetchall()
+        return {r["state"]: r["n"] for r in rows}
+
+    def media_key_for_checksum(self, checksum: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT media_key FROM asset WHERE checksum = ? AND media_key IS NOT NULL LIMIT 1",
+            (checksum,),
+        ).fetchone()
+        return row["media_key"] if row else None
+
+    def synced_ids(self) -> set[str]:
+        rows = self._conn.execute(
+            "SELECT immich_id FROM asset WHERE state = ?", (AssetState.SYNCED.value,)
+        ).fetchall()
+        return {r["immich_id"] for r in rows}
+
+    def synced_count(self) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM asset WHERE state = ?", (AssetState.SYNCED.value,)
+        ).fetchone()
+        return row["n"]
+
+    def requeue_stale_uploading(self, older_than: timedelta) -> int:
+        """Recover rows a crash left claimed."""
+        cutoff = (self._clock.now() - older_than).isoformat()
+        cur = self._conn.execute(
+            "UPDATE asset SET state = ?, claimed_at = NULL"
+            " WHERE state = ? AND claimed_at IS NOT NULL AND claimed_at <= ?",
+            (AssetState.PENDING.value, AssetState.UPLOADING.value, cutoff),
+        )
+        return cur.rowcount
