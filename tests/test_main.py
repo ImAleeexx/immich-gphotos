@@ -24,12 +24,15 @@ def test_the_webhook_secret_survives_a_restart(tmp_path):
 def test_backfill_and_wizard_and_workflow_are_wired(tmp_path):
     """The /api/backfill/* routes use services.backfill unconditionally; if it
     defaults to None those routes 500. The wizard and immich client must also be
-    populated so the setup and diagnostics routes work."""
+    populated so the setup and diagnostics routes work. On a fresh database no
+    workflow has been created yet, so workflow_id must read back as None
+    rather than some leftover or hardcoded value."""
     services, _ = build_services(tmp_path, env={})
     assert services.backfill is not None
     assert services.wizard is not None
     assert services.immich is not None
     assert services.clock is not None
+    assert services.workflow_id is None
 
 
 def test_a_persisted_setting_survives_a_rebuild_of_the_services(tmp_path):
@@ -68,6 +71,19 @@ def test_malformed_persisted_settings_do_not_crash_build_services(tmp_path):
     assert services.settings.quality == "original"
     assert services.settings.worker_threads == 2
     assert services.settings.albums_enabled is True
+
+
+def test_worker_threads_out_of_the_apis_bounds_is_rejected(tmp_path):
+    """The API's SettingsPatch bounds worker_threads to [1, 16]
+    (MIN_WORKER_THREADS/MAX_WORKER_THREADS in api.routes). A hand-edited
+    database row with a value the API itself would reject must not be
+    applied, or a stored row could set what the API refuses to accept."""
+    conn = connect(tmp_path / "immich-gphotos.db")
+    SettingRepo(conn).set(SETTING_KEY, {"worker_threads": 17})
+
+    services, _ = build_services(tmp_path, env={})
+
+    assert services.settings.worker_threads == 2  # dataclass default, not 17
 
 
 def test_stale_uploading_assets_are_requeued_at_startup(tmp_path):

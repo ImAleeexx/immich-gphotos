@@ -12,12 +12,18 @@ router = APIRouter(prefix="/api")
 
 SETTING_KEY = "settings"
 
+# Shared with main._merged_settings, which validates a stored settings row
+# against these same bounds so a hand-edited database row cannot apply a
+# worker_threads value the API itself would reject.
+MIN_WORKER_THREADS = 1
+MAX_WORKER_THREADS = 16
+
 
 class SettingsPatch(BaseModel):
     quality: Quality | None = None
     albums_enabled: bool | None = None
     deletions_enabled: bool | None = None
-    worker_threads: int | None = Field(default=None, ge=1, le=16)
+    worker_threads: int | None = Field(default=None, ge=MIN_WORKER_THREADS, le=MAX_WORKER_THREADS)
     bandwidth_bytes_per_second: int | None = Field(default=None, ge=0)
 
 

@@ -2,12 +2,11 @@ import os
 import threading
 from collections.abc import Mapping
 from dataclasses import replace
-from datetime import timedelta
 from pathlib import Path
 from typing import get_args
 
 from immich_gphotos.api.app import create_app
-from immich_gphotos.api.routes import SETTING_KEY
+from immich_gphotos.api.routes import MAX_WORKER_THREADS, MIN_WORKER_THREADS, SETTING_KEY
 from immich_gphotos.clock import SystemClock
 from immich_gphotos.config import Quality, Settings
 from immich_gphotos.gphotos.client import GpmcClient
@@ -26,7 +25,7 @@ from immich_gphotos.sync.albums import AlbumMirror
 from immich_gphotos.sync.backfill import BackfillJob
 from immich_gphotos.sync.bytes import ByteResolver
 from immich_gphotos.sync.deletions import DeletionSweeper
-from immich_gphotos.sync.loops import BackgroundLoops
+from immich_gphotos.sync.loops import STALE_UPLOAD_AGE, BackgroundLoops
 from immich_gphotos.sync.reconciler import Reconciler
 from immich_gphotos.sync.runtime import Runtime
 from immich_gphotos.sync.worker import Worker
@@ -36,10 +35,6 @@ IMMICH_URL_KEY = "immich_url"
 IMMICH_KEY_KEY = "immich_api_key"
 GOOGLE_AUTH_KEY = "google_auth_data"
 WORKFLOW_ID_KEY = "workflow_id"
-
-# Startup recovery for assets a crash left claimed mid-upload. BackgroundLoops
-# repeats this on the reconcile cadence, so this is only the boot-time pass.
-STALE_UPLOAD_AGE = timedelta(hours=1)
 
 _QUALITIES = frozenset(get_args(Quality))
 
@@ -69,7 +64,11 @@ def _merged_settings(immich_url: str, stored: object) -> Settings:
                 overrides[key] = value
 
         worker_threads = stored.get("worker_threads")
-        if isinstance(worker_threads, int) and not isinstance(worker_threads, bool) and worker_threads >= 1:
+        if (
+            isinstance(worker_threads, int)
+            and not isinstance(worker_threads, bool)
+            and MIN_WORKER_THREADS <= worker_threads <= MAX_WORKER_THREADS
+        ):
             overrides["worker_threads"] = worker_threads
 
         bandwidth = stored.get("bandwidth_bytes_per_second")
