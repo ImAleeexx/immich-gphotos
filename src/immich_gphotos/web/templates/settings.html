@@ -49,6 +49,7 @@
   </button>
 </form>
 <script>
+document.addEventListener("DOMContentLoaded", () => {
   const form = document.getElementById("settings-form");
   const submitButton = document.getElementById("settings-submit");
   const deletionsPill = document.getElementById("deletions-pill");
@@ -155,5 +156,6 @@
   });
 
   load();
+});
 </script>
 {% endblock %}

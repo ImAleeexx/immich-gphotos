@@ -42,7 +42,7 @@
   </div>
 </div>
 <script>
-(function () {
+document.addEventListener("DOMContentLoaded", function () {
   "use strict";
 
   var lastEventsKey = null;
@@ -207,6 +207,6 @@
 
   pollReadiness();
   setInterval(pollReadiness, 15000);
-})();
+});
 </script>
 {% endblock %}
