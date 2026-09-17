@@ -136,6 +136,36 @@ def test_google_validation_failure_does_not_persist_and_scrubs_the_secret(rig, m
     assert isinstance(services.gphotos, FakeGooglePhotosClient)
 
 
+def test_google_field_validation_error_does_not_echo_the_submitted_secret(rig):
+    """Live finding: pydantic v2 sets a "missing field" error's `input` to the
+    *entire* request body. A request with a misnamed field (e.g. the real
+    field name typo'd) makes `google_auth_data` "missing", and the default
+    FastAPI/pydantic error response then echoes the whole body -- including
+    the real credential the caller just submitted -- back in the 422. This
+    must never reach the response body, regardless of which field was
+    misnamed or malformed."""
+    http, services, _ = rig
+
+    response = http.post("/api/wizard/google", json={"wrong_field_name": SECRET_AUTH_DATA})
+
+    assert response.status_code == 422
+    assert SECRET_AUTH_DATA not in response.text
+    assert services.settings_repo.get(GOOGLE_AUTH_KEY) is None
+
+
+def test_immich_field_validation_error_does_not_echo_the_submitted_secret(rig):
+    """Same class of leak as the Google case above, for the Immich API key."""
+    http, services, _ = rig
+
+    response = http.post(
+        "/api/wizard/immich", json={"immich_url": BASE, "wrong_field_name": "immich-secret-value"}
+    )
+
+    assert response.status_code == 422
+    assert "immich-secret-value" not in response.text
+    assert services.settings_repo.get(IMMICH_KEY_KEY) is None
+
+
 def test_google_validation_success_persists_and_swaps_the_live_client(rig, monkeypatch):
     http, services, loops_handle = rig
     monkeypatch.setattr("gpmc.Client", _FakeGpmcOk)

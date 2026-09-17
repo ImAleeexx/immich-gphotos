@@ -1,6 +1,8 @@
 import hmac
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from immich_gphotos.api import auth, hooks, ops, pages, routes, stream, wizard
@@ -10,6 +12,31 @@ from immich_gphotos.services import Services
 def create_app(services: Services) -> FastAPI:
     app = FastAPI(title="immich-gphotos", docs_url=None, redoc_url=None)
     app.state.services = services
+
+    @app.exception_handler(RequestValidationError)
+    async def strip_input_from_validation_errors(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """FastAPI's default handler for a pydantic validation failure echoes
+        the submitted value back verbatim in each error's `input` field. For a
+        "missing field" error, pydantic v2 sets `input` to the *entire*
+        request body -- so a wizard request with a misnamed field (e.g.
+        `google_auth_data` sent as something else) returns a 422 whose body
+        contains the real Google/Immich credential the caller just submitted,
+        in a response body that anything downstream (proxies, logs, browser
+        devtools) may capture. `immich_api_key` and `google_auth_data` are
+        credentials pulled from a live server / an Android device over ADB --
+        not secrets a user can casually rotate.
+
+        Rather than auditing every current and future route that accepts a
+        credential for a safe request model, strip `input` from every
+        validation error application-wide: it is diagnostically useful to a
+        developer but never needs to reach an HTTP response, and no route
+        should ever depend on the client receiving its own submitted value
+        back.
+        """
+        sanitized = [{k: v for k, v in error.items() if k != "input"} for error in exc.errors()]
+        return JSONResponse(status_code=422, content=jsonable_encoder({"detail": sanitized}))
 
     @app.middleware("http")
     async def require_session(request, call_next):
