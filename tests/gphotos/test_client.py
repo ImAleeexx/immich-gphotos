@@ -8,10 +8,13 @@ only synthetic exceptions and malformed `auth_data` strings — never the real
 Google API or real credentials.
 """
 
+import sys
+import threading
 from pathlib import Path
 
 import pytest
 
+import immich_gphotos.gphotos.client as client_module
 from immich_gphotos.gphotos.client import GpmcClient
 from immich_gphotos.gphotos.protocol import GPhotosError
 from immich_gphotos.models import ErrorClass
@@ -127,3 +130,66 @@ def test_a_construction_phase_429_is_rate_limited_not_auth_invalid(monkeypatch):
 
     assert excinfo.value.error_class is ErrorClass.RATE_LIMITED
     assert excinfo.value.error_class.halts_transfer() is False
+
+
+def test_gpmc_is_imported_at_module_scope():
+    """Showstopper regression guard: gpmc's `client.py` runs
+    `signal.signal(signal.SIGINT, signal.SIG_DFL)` at import time, which
+    raises `ValueError: signal only works in main thread of the main
+    interpreter` whenever `import gpmc` first happens off the main thread.
+
+    Our fix imports `gpmc` at the top of `immich_gphotos.gphotos.client`, so
+    the import happens when *our* module is imported (during normal
+    application startup, on the main thread) rather than lazily, on first use,
+    which in production only ever happens from a worker thread (FastAPI's sync
+    threadpool or the background sync loop).
+
+    This asserts the eager import actually happened, so a future "tidy this
+    up" refactor back to a lazy `from gpmc import Client` inside `_client`
+    is caught here instead of in production.
+    """
+    assert "gpmc" in sys.modules
+    assert hasattr(client_module, "gpmc")
+
+
+def test_google_operations_are_reachable_from_a_non_main_thread():
+    """Showstopper regression guard (Finding 1): before the fix, constructing
+    gpmc's `Client` — and therefore every Google operation — failed on any
+    non-main thread, because `import gpmc` (done lazily, on first use) hit
+    gpmc's module-level `signal.signal(...)` call outside the main thread.
+    That raised a raw `ValueError: signal only works in main thread of the
+    main interpreter`, which `_guard` classified as `AUTH_INVALID` — telling
+    the user their credentials were bad when the real defect was an import
+    that can only run on the main thread.
+
+    This constructs a `GpmcClient` with deliberately malformed (synthetic,
+    non-real) `auth_data` *inside* a `threading.Thread`, mirroring where
+    every upload/hash-check/trash call and the wizard's sync route handler
+    actually run in production. Before the fix (lazy import), this raises/
+    reports a signal/thread error. After the fix, gpmc is already imported
+    (at module scope, on the main thread that imported this test module), so
+    construction fails only on the malformed credential itself — a
+    `GPhotosError` about the credential, not a `ValueError` about signals.
+    """
+    result: dict[str, object] = {}
+
+    def worker() -> None:
+        client = GpmcClient(auth_data=MALFORMED_AUTH_DATA)
+        try:
+            client.exists("checksum")
+        except BaseException as exc:  # noqa: BLE001 - captured for assertion in main thread
+            result["exc"] = exc
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert "exc" in result, "worker thread did not raise — expected a GPhotosError about the credential"
+    exc = result["exc"]
+
+    message = str(exc).lower()
+    assert "signal" not in message
+    assert "thread" not in message
+
+    assert isinstance(exc, GPhotosError), f"expected GPhotosError, got {type(exc).__name__}: {exc}"
+    assert exc.error_class is ErrorClass.AUTH_INVALID

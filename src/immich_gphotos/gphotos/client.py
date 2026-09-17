@@ -3,7 +3,23 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+# gpmc.client runs `signal.signal(signal.SIGINT, signal.SIG_DFL)` at module
+# import time (to make Ctrl+C cancel its internal threads). signal.signal
+# raises ValueError outside the main thread of the main interpreter, so
+# `import gpmc` fails unconditionally whenever it first happens off the main
+# thread. In this service that is every non-main-thread caller: FastAPI's
+# sync-route threadpool and the background worker thread. Do NOT move this
+# back to a lazy import inside a property/method "to keep imports cheap" -
+# that is what caused every Google operation to fail in production with a
+# `ValueError: signal only works in main thread of the main interpreter`,
+# misreported as an authentication failure. Importing here, at our own
+# module's top level, forces gpmc's import to happen when this module is
+# first imported - which is during normal application startup on the main
+# thread (see main.py's module-level imports) - long before any worker
+# thread would otherwise trigger it.
+import gpmc
 import requests.exceptions
+from gpmc.exceptions import UploadRejectedError
 
 from immich_gphotos.config import Quality
 from immich_gphotos.gphotos.protocol import GPhotosError
@@ -26,6 +42,17 @@ _QUOTA_MARKERS = ("quota", "storage full", "out of space")
 _TRANSIENT_MARKERS = ("timed out", "timeout", "connection", "temporarily", "500", "502", "503", "504")
 
 
+def _is_signal_thread_error(exc: BaseException) -> bool:
+    """True for gpmc's `signal.signal(...)` import-time failure.
+
+    `signal.signal` raises `ValueError("signal only works in main thread of
+    the main interpreter")` when gpmc is imported off the main thread. That is
+    an internal import/threading defect, never a credential problem, and must
+    never be classified or force-promoted as AUTH_INVALID.
+    """
+    return isinstance(exc, ValueError) and "signal" in str(exc).lower() and "thread" in str(exc).lower()
+
+
 def classify_gpmc_error(exc: BaseException) -> ErrorClass:
     """Map a gpmc/requests failure onto our taxonomy.
 
@@ -36,9 +63,15 @@ def classify_gpmc_error(exc: BaseException) -> ErrorClass:
     Quota markers are checked before auth markers: Google surfaces storage and
     rate quota errors as HTTP 403 with a quota reason string, and misrouting
     those to AUTH_INVALID sends someone to re-extract auth_data for no reason.
-    """
-    from gpmc.exceptions import UploadRejectedError
 
+    A `ValueError` complaining about signals/threads is not a credential
+    problem at all - it is gpmc's module-level `signal.signal(...)` call
+    failing because something imported gpmc off the main thread. That must
+    never be reported to the user as AUTH_INVALID (which halts the service
+    and tells them to re-extract auth_data): it is an internal import/startup
+    defect, so it is classified as UNKNOWN rather than matched against the
+    auth markers below.
+    """
     if isinstance(exc, UploadRejectedError):
         return ErrorClass.UNSUPPORTED_MEDIA
     if isinstance(
@@ -46,6 +79,8 @@ def classify_gpmc_error(exc: BaseException) -> ErrorClass:
         ConnectionError | TimeoutError | requests.exceptions.ConnectionError | requests.exceptions.Timeout,
     ):
         return ErrorClass.TRANSIENT
+    if _is_signal_thread_error(exc):
+        return ErrorClass.UNKNOWN
     text = str(exc).lower()
     if any(m in text for m in _QUOTA_MARKERS):
         return ErrorClass.QUOTA_EXHAUSTED
@@ -75,9 +110,9 @@ class GpmcClient:
     def _client(self):  # noqa: ANN202 - gpmc has no public type export
         existing = getattr(self._local, "client", None)
         if existing is None:
-            from gpmc import Client
-
-            existing = Client(auth_data=self._auth_data, timeout=self._timeout, log_level="WARNING")
+            # gpmc itself is imported eagerly at module scope (see top of
+            # file); this only constructs a new instance for this thread.
+            existing = gpmc.Client(auth_data=self._auth_data, timeout=self._timeout, log_level="WARNING")
             self._local.client = existing
         return existing
 
@@ -105,12 +140,19 @@ class GpmcClient:
         Google's auth endpoint is a passing Google-side problem, not a bad
         credential — forcing it would halt the whole service and demand a
         needless re-extraction of `auth_data` from an Android device.
+
+        Likewise, a `ValueError` about signals/threads (gpmc's module-level
+        `signal.signal` call failing when imported off the main thread) is an
+        internal defect, never a bad credential: it must not be force-promoted
+        to AUTH_INVALID here either, or the same production failure this file
+        was fixed for would resurface as a misleading "authentication failed"
+        the moment gpmc's import is (re-)triggered off the main thread.
         """
         try:
             client = self._client
         except Exception as exc:  # noqa: BLE001 - deliberately broad, then classified
             error_class = classify_gpmc_error(exc)
-            if error_class is ErrorClass.UNKNOWN:
+            if error_class is ErrorClass.UNKNOWN and not _is_signal_thread_error(exc):
                 error_class = ErrorClass.AUTH_INVALID
             raise GPhotosError(f"authentication failed: {exc}", error_class) from exc
 
