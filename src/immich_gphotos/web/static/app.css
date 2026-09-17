@@ -128,6 +128,15 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute must win over every component's own `display`
+   declaration regardless of source order -- e.g. `.panel--done { display:
+   grid }` or `.meter { display: grid }` would otherwise outrank the UA
+   stylesheet's `[hidden] { display: none }` and leave a "hidden" element
+   visible. */
+[hidden] {
+  display: none !important;
+}
+
 html {
   scroll-behavior: smooth;
 }
@@ -177,6 +186,21 @@ body::after {
   outline: 2px solid var(--accent-ring);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
+}
+
+/* Links -- app.css previously defined no bare `a` rule at all, so a prose
+   link fell through to the UA default (`#0000EE` on this dark background,
+   roughly 2:1 contrast) and a button-styled anchor rendered underlined. */
+a {
+  color: var(--accent);
+}
+
+a:hover {
+  color: var(--accent-strong);
+}
+
+a.btn {
+  text-decoration: none;
 }
 
 /* Typography */
@@ -566,6 +590,18 @@ textarea:focus {
   gap: var(--space-3);
 }
 
+.dialog__title {
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.011em;
+}
+
+.dialog__text {
+  margin: 0;
+  color: var(--text-muted);
+}
+
 .dialog__actions {
   display: flex;
   justify-content: flex-end;
@@ -918,7 +954,10 @@ textarea:focus {
   color: var(--text-faint);
 }
 
-.empty__actions {
+/* Nested under .empty (specificity 0,2,0) so it beats `.empty p { margin: 0
+   }` (0,1,1) -- .empty__actions is itself a <p>, and a bare `.empty__actions`
+   rule here would otherwise lose its top margin to that reset. */
+.empty .empty__actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
