@@ -126,9 +126,8 @@ Settings changed later take effect immediately — no restart.
 | **Deletions** | Propagate deletions to Google's trash. Off by default — see below. |
 | **Worker threads** | How many uploads run concurrently. |
 | **Bandwidth cap** | Upload throughput limit for metered or shared connections. Leave blank for no limit. |
-| **Schedule window** | Confine byte transfer to certain hours. Hash checks keep running around the clock — they're tiny, and they clear the queue for free. |
 
-Content filters (size caps, RAW, tags, album allowlist) exist in the engine with sensible defaults but are not yet exposed for editing in this release.
+Schedule window, content filters (size caps, RAW, tags, album allowlist) and retry behaviour exist in the engine — the engine correctly gates transfer on a configured window and applies sensible defaults for the rest — but are not yet exposed for editing in this release.
 
 ## Deletions
 
