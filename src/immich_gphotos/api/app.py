@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from immich_gphotos.api import auth, hooks, pages, routes, stream
+from immich_gphotos.api import auth, hooks, ops, pages, routes, stream
 from immich_gphotos.services import Services
 
 
@@ -22,6 +22,7 @@ def create_app(services: Services) -> FastAPI:
         return await call_next(request)
 
     app.include_router(hooks.router)
+    app.include_router(ops.router)
     app.include_router(auth.router)
     app.include_router(routes.router)
     app.include_router(stream.router)

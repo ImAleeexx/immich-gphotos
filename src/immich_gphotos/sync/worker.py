@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -11,6 +12,8 @@ from immich_gphotos.sync.bytes import ByteResolver
 from immich_gphotos.sync.eligibility import check_eligibility
 
 HALT_RETRY_DELAY = timedelta(minutes=10)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,9 @@ class Worker:
         except OSError as exc:
             return self._handle_failure(stored, ErrorClass.ASSET_UNAVAILABLE, str(exc))
         except Exception as exc:  # noqa: BLE001 - never let one asset kill the worker
+            # last_error only keeps a 500-char truncated message with no traceback,
+            # so the full exception must be captured here or it is lost forever.
+            logger.exception("unexpected error processing asset %s", asset.immich_id)
             return self._handle_failure(stored, ErrorClass.UNKNOWN, str(exc))
 
     def _handle_failure(self, stored: StoredAsset, error_class: ErrorClass, message: str) -> WorkerResult:
