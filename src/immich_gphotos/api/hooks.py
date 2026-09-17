@@ -1,4 +1,5 @@
 import hmac
+import json
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -38,10 +39,10 @@ async def receive(request: Request) -> dict:
     if not hmac.compare_digest(supplied, services.webhook_secret):
         raise HTTPException(status_code=401, detail="bad secret")
 
-    payload = await request.json()
     try:
+        payload = await request.json()
         asset = asset_from_webhook(payload)
-    except ValueError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         services.events.add("warn", str(exc))
         raise HTTPException(status_code=400, detail="unusable payload") from exc
 

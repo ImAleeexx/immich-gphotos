@@ -93,9 +93,25 @@ def test_missing_secret_is_rejected(client):
     assert http.post("/hooks/immich", json=payload(B64)).status_code == 401
 
 
-def test_unparseable_payload_returns_400_without_raising(client):
+def test_payload_missing_required_field_returns_400(client):
     http, _ = client
     response = http.post("/hooks/immich", json={"nope": True}, headers={"X-IGP-Secret": "s3cret"})
+    assert response.status_code == 400
+
+
+def test_non_json_body_returns_400_without_raising(client):
+    """A genuinely unparseable body (not just a missing field) must not become a 500.
+
+    Immich's webhook action never inspects the response and never retries, so a
+    500 here is indistinguishable from success on its side and silently drops
+    the asset.
+    """
+    http, _ = client
+    response = http.post(
+        "/hooks/immich",
+        content=b"not json at all {{{",
+        headers={"X-IGP-Secret": "s3cret"},
+    )
     assert response.status_code == 400
 
 
