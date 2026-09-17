@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from immich_gphotos.clock import Clock
@@ -188,6 +189,22 @@ class AssetRepo:
                 "SELECT COUNT(*) AS n FROM asset WHERE state = ?", (AssetState.SYNCED.value,)
             ).fetchone()
         return row["n"]
+
+    def trashed_synced(self) -> list[StoredAsset]:
+        with self._conn.lock:
+            rows = self._conn.execute(
+                "SELECT * FROM asset WHERE state = ? AND is_trashed = 1 AND media_key IS NOT NULL",
+                (AssetState.SYNCED.value,),
+            ).fetchall()
+        return [_row_to_stored(r) for r in rows]
+
+    def mark_deleted(self, ids: Sequence[str]) -> None:
+        """Terminal, but keeps the media key so a re-added asset resolves instantly."""
+        with self._conn.lock:
+            self._conn.executemany(
+                "UPDATE asset SET state = ?, ineligible_reason = 'deleted_from_immich' WHERE immich_id = ?",
+                [(AssetState.INELIGIBLE.value, i) for i in ids],
+            )
 
     def requeue_stale_uploading(self, older_than: timedelta) -> int:
         """Recover rows a crash left claimed."""
