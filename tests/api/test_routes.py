@@ -1,4 +1,6 @@
 import json
+import re
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -86,6 +88,61 @@ def test_failures_are_listed_with_their_error_class(rig):
     assert body[0]["immich_id"] == "a"
     assert body[0]["error_class"] == "unsupported_media"
     assert body[0]["last_error"] == "rejected by google"
+
+
+def test_failures_with_a_malicious_filename_are_not_rendered_unescaped(rig):
+    """filename is Immich's originalFileName -- attacker-influenceable by anyone
+    who can add a file (a shared album, a mobile client, an external library
+    import) -- and last_error is arbitrary Google/gpmc error text. Neither may
+    ever be interpolated into the failures page's DOM via innerHTML: a stored
+    <script> or event-handler payload must never be executable in this
+    credential-holding admin UI.
+
+    The failures page builds its rows from JSON fetched client-side rather
+    than server-rendering them, so a plain HTTP client cannot execute the
+    page's JS to prove the DOM is safe. This instead asserts, at the level
+    this test suite can reach: (1) the malicious strings survive the round
+    trip through the store and the JSON API unchanged (a prerequisite for the
+    bug -- they are not being silently stripped upstream), and (2) the
+    template's row-building script never assigns interpolated field values to
+    innerHTML, only ever building cells with textContent/createElement.
+    """
+    http, assets, _ = rig
+    evil_filename = "<script>alert(document.cookie)</script>.jpg"
+    evil_error = "<img src=x onerror=alert(document.cookie)>"
+    evil_asset = Asset(
+        immich_id="a",
+        checksum="sum-a",
+        filename=evil_filename,
+        type="IMAGE",
+        size_bytes=1,
+        immich_updated_at="2026-09-17T10:00:00Z",
+        original_path=None,
+        visibility="timeline",
+        is_offline=False,
+        is_trashed=False,
+    )
+    assets.upsert_pending(evil_asset, Priority.WEBHOOK)
+    assets.claim_next(limit=1)
+    assets.mark_failed("a", ErrorClass.UNKNOWN, evil_error)
+    # mark_failed truncates and (per Finding 4) redacts, but does not strip
+    # HTML -- the raw payload must still reach the JSON API for this to be a
+    # meaningful test of the *rendering* fix rather than an upstream sanitizer.
+    body = http.get("/api/failures").json()
+    assert body[0]["filename"] == evil_filename
+    assert body[0]["last_error"] == evil_error
+    assert assets.get("a").last_error == evil_error
+
+    template = Path(__file__).resolve().parents[2] / "src/immich_gphotos/web/templates/failures.html"
+    source = template.read_text()
+    # No assignment to .innerHTML anywhere in the row-building script (a plain
+    # mention of the word, e.g. in a comment, is not what this guards against).
+    assert not re.search(r"\.innerHTML\s*=", source)
+    # Guard against the exact regression: a template literal splicing a field
+    # straight into markup (`${f.filename}` etc. inside a backtick string).
+    assert not re.search(r"`[^`]*\$\{f\.(filename|last_error)\}", source)
+    assert "textContent" in source
+    assert "createElement" in source
 
 
 def test_manual_retry_returns_a_failure_to_the_queue(rig):

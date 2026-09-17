@@ -21,7 +21,10 @@ def create_app(services: Services) -> FastAPI:
         # ever reaching compare_digest (it requires two real strings); once
         # both are present, the actual token comparison must be constant-time
         # — this is the same bearer token gating every authenticated route.
-        if not expected or not supplied or not hmac.compare_digest(supplied, expected):
+        # Starlette decodes cookies as latin-1, so a corrupted cookie value
+        # with a high byte is a non-ASCII str; compare_digest raises TypeError
+        # on that instead of returning False, so compare bytes, not str.
+        if not expected or not supplied or not hmac.compare_digest(supplied.encode(), expected.encode()):
             if request.url.path.startswith("/api"):
                 return JSONResponse({"detail": "unauthenticated"}, status_code=401)
             return RedirectResponse("/login", status_code=307)

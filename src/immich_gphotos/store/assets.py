@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from immich_gphotos.clock import Clock
+from immich_gphotos.logging import Redactor
 from immich_gphotos.models import Asset, AssetState, ErrorClass, Outcome, Priority, StoredAsset
 
 
@@ -38,9 +39,13 @@ def _row_to_stored(row: sqlite3.Row) -> StoredAsset:
 class AssetRepo:
     """The asset table is also the work queue."""
 
-    def __init__(self, conn: sqlite3.Connection, clock: Clock) -> None:
+    def __init__(self, conn: sqlite3.Connection, clock: Clock, redactor: Redactor | None = None) -> None:
         self._conn = conn
         self._clock = clock
+        # Defaults to a secret-less Redactor: it still scrubs the auth_data
+        # shape by pattern, so persisted error text is never worse off even
+        # when a caller (tests, older call sites) does not wire one in.
+        self._redactor = redactor if redactor is not None else Redactor(())
 
     def upsert_pending(self, asset: Asset, priority: Priority) -> bool:
         """Enqueue an asset. Returns False if it is already in a terminal state.
@@ -125,6 +130,7 @@ class AssetRepo:
     def mark_retry(
         self, immich_id: str, error_class: ErrorClass, message: str, next_attempt_at: datetime
     ) -> None:
+        message = self._redactor.scrub(message)
         with self._conn.lock:
             self._conn.execute(
                 "UPDATE asset SET state = ?, attempts = attempts + 1, next_attempt_at = ?,"
@@ -151,6 +157,7 @@ class AssetRepo:
             )
 
     def mark_failed(self, immich_id: str, error_class: ErrorClass, message: str) -> None:
+        message = self._redactor.scrub(message)
         with self._conn.lock:
             self._conn.execute(
                 "UPDATE asset SET state = ?, attempts = attempts + 1, error_class = ?,"

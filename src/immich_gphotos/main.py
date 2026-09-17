@@ -13,7 +13,7 @@ from immich_gphotos.gphotos.client import GpmcClient
 from immich_gphotos.gphotos.fake import FakeGooglePhotosClient
 from immich_gphotos.immich.client import HttpImmichClient
 from immich_gphotos.immich.fake import FakeImmichClient
-from immich_gphotos.logging import configure_logging
+from immich_gphotos.logging import Redactor, configure_logging
 from immich_gphotos.services import Services
 from immich_gphotos.setup.wizard import Wizard
 from immich_gphotos.store.albums import AlbumRepo
@@ -84,11 +84,7 @@ def build_services(data_dir: Path, env: Mapping[str, str] | None = None) -> tupl
     clock = SystemClock()
     conn = connect(Path(data_dir) / "immich-gphotos.db")
 
-    assets = AssetRepo(conn, clock)
-    albums = AlbumRepo(conn)
-    cursors = CursorRepo(conn)
     settings_repo = SettingRepo(conn)
-    events = EventRepo(conn, clock)
 
     secret = settings_repo.get(SECRET_KEY)
     if not secret:
@@ -100,6 +96,17 @@ def build_services(data_dir: Path, env: Mapping[str, str] | None = None) -> tupl
     api_key = settings_repo.get(IMMICH_KEY_KEY)
     auth_data = settings_repo.get(GOOGLE_AUTH_KEY)
     configure_logging(env.get("IGP_LOG_LEVEL", "INFO"), secrets=[secret, api_key, auth_data])
+
+    # The same Redactor instance backs the persisted stores (AssetRepo.last_error,
+    # EventRepo.add) as backs the logging handler above, so credential text is
+    # scrubbed the same way wherever it might land. `logging.py` sits alongside
+    # `store/`, not under `api/`, so the store layer importing Redactor from it
+    # does not reach into the API layer.
+    redactor = Redactor([secret, api_key, auth_data])
+    assets = AssetRepo(conn, clock, redactor=redactor)
+    albums = AlbumRepo(conn)
+    cursors = CursorRepo(conn)
+    events = EventRepo(conn, clock, redactor=redactor)
 
     # Until the wizard has been completed the fakes stand in, so the service boots,
     # serves the wizard and never crash-loops on missing credentials.

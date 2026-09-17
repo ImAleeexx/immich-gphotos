@@ -113,6 +113,34 @@ def test_logout_invalidates_the_old_session_cookie(rig):
     assert replay.get("/api/status").status_code == 401
 
 
+def test_high_byte_session_cookie_is_rejected_not_a_500(rig):
+    """Starlette decodes cookies as latin-1, so a cookie byte >= 0x80 makes a
+    non-ASCII str; hmac.compare_digest raises TypeError on that instead of
+    just returning False. A corrupted cookie must be a clean 401, not a 500.
+    """
+    http, services = rig
+    services.settings_repo.set(PASSWORD_KEY, hash_password("hunter2"))
+    services.settings_repo.set(SESSION_COOKIE, "realtoken")
+    cookie_header = f"{SESSION_COOKIE}=br\xe9ken".encode("latin-1")
+    response = http.get("/api/status", headers={"Cookie": cookie_header})
+    assert response.status_code == 401
+
+
+def test_open_paths_are_matched_exactly_not_by_prefix():
+    from immich_gphotos.api.auth import is_open
+
+    assert is_open("/metrics") is True
+    assert is_open("/healthz") is True
+    assert is_open("/login") is True
+    assert is_open("/hooks/immich") is True
+    # A future route sharing a prefix with an open path must NOT walk through
+    # the auth gate just because it starts with one of these strings.
+    assert is_open("/metrics-debug") is False
+    assert is_open("/healthzzz") is False
+    assert is_open("/login/foo") is False
+    assert is_open("/static/whatever") is False
+
+
 def test_first_run_login_sets_the_password_and_grants_access(rig):
     """Correction 1: on a fresh install nothing is stored yet, so the login
     handler must treat the first submitted password as the one to set, matching

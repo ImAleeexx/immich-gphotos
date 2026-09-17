@@ -36,7 +36,11 @@ def asset_from_webhook(payload: dict) -> Asset:
 async def receive(request: Request) -> dict:
     services = request.app.state.services
     supplied = request.headers.get(services.webhook_header, "")
-    if not hmac.compare_digest(supplied, services.webhook_secret):
+    # Starlette decodes headers as latin-1, so a supplied secret with any byte
+    # >= 0x80 is a non-ASCII str; hmac.compare_digest raises TypeError on that
+    # rather than just returning False. Compare bytes instead, so a malformed
+    # header is a clean rejection, not a 500.
+    if not hmac.compare_digest(supplied.encode(), services.webhook_secret.encode()):
         raise HTTPException(status_code=401, detail="bad secret")
 
     try:

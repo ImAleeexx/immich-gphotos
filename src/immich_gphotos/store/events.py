@@ -1,17 +1,29 @@
 import sqlite3
 
 from immich_gphotos.clock import Clock
+from immich_gphotos.logging import Redactor
 
 
 class EventRepo:
     """A bounded ring of recent activity, for the UI's diagnostics view."""
 
-    def __init__(self, conn: sqlite3.Connection, clock: Clock, limit: int = 2000) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        clock: Clock,
+        limit: int = 2000,
+        redactor: Redactor | None = None,
+    ) -> None:
         self._conn = conn
         self._clock = clock
         self._limit = limit
+        # Defaults to a secret-less Redactor: it still scrubs the auth_data
+        # shape by pattern, so persisted event text is never worse off even
+        # when a caller (tests, older call sites) does not wire one in.
+        self._redactor = redactor if redactor is not None else Redactor(())
 
     def add(self, level: str, message: str, asset_id: str | None = None) -> None:
+        message = self._redactor.scrub(message)
         with self._conn.lock:
             self._conn.execute(
                 "INSERT INTO event (ts, level, asset_id, message) VALUES (?,?,?,?)",

@@ -9,7 +9,7 @@ router = APIRouter()
 
 PASSWORD_KEY = "ui_password"
 SESSION_COOKIE = "igp_session"
-OPEN_PATHS = ("/hooks/immich", "/healthz", "/metrics", "/login", "/static")
+OPEN_PATHS = frozenset({"/hooks/immich", "/healthz", "/metrics", "/login"})
 
 _ITERATIONS = 200_000
 
@@ -34,7 +34,7 @@ def requires_setup(services) -> bool:
 
 
 def is_open(path: str) -> bool:
-    return any(path.startswith(p) for p in OPEN_PATHS)
+    return path in OPEN_PATHS
 
 
 @router.post("/login")

@@ -119,3 +119,20 @@ def test_bad_checksum_returns_400(client):
     http, _ = client
     response = http.post("/hooks/immich", json=payload("not-a-hash"), headers={"X-IGP-Secret": "s3cret"})
     assert response.status_code == 400
+
+
+def test_high_byte_secret_header_is_rejected_not_a_500(client):
+    """Starlette decodes headers as latin-1, so a header byte >= 0x80 makes a
+    non-ASCII str; hmac.compare_digest raises TypeError on that instead of
+    just returning False. A malformed secret must be a clean 401, not a 500 --
+    Immich's webhook action never inspects the response, so a 500 here would
+    be indistinguishable from success on its side.
+    """
+    http, assets = client
+    response = http.post(
+        "/hooks/immich",
+        json=payload(B64),
+        headers={"X-IGP-Secret": b"wr\xe9ng"},
+    )
+    assert response.status_code == 401
+    assert assets.get("a1") is None

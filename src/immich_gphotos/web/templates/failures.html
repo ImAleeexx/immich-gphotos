@@ -8,27 +8,48 @@
   <tbody id="rows"><tr><td colspan="5">Loading…</td></tr></tbody>
 </table>
 <script>
+  function cell(text) {
+    const td = document.createElement("td");
+    td.textContent = text;
+    return td;
+  }
+
   async function load() {
     const rows = document.getElementById("rows");
     const failures = await (await fetch("/api/failures")).json();
+    rows.replaceChildren();
     if (!failures.length) {
-      rows.innerHTML = "<tr><td colspan=\"5\">No failures.</td></tr>";
+      const tr = document.createElement("tr");
+      tr.appendChild(cell("No failures."));
+      tr.lastChild.colSpan = 5;
+      rows.appendChild(tr);
       return;
     }
-    rows.innerHTML = failures.map((f) => `
-      <tr>
-        <td>${f.filename}</td>
-        <td>${f.attempts}</td>
-        <td>${f.error_class ?? "-"}</td>
-        <td>${f.last_error ?? "-"}</td>
-        <td><button data-id="${f.immich_id}" class="retry">Retry</button></td>
-      </tr>`).join("");
-    rows.querySelectorAll(".retry").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        await fetch(`/api/failures/${btn.dataset.id}/retry`, { method: "POST" });
+    for (const f of failures) {
+      // filename is Immich's originalFileName and last_error is arbitrary
+      // Google/gpmc error text -- both are attacker-influenceable, so every
+      // field here goes through textContent, never innerHTML.
+      const tr = document.createElement("tr");
+      tr.appendChild(cell(f.filename));
+      tr.appendChild(cell(f.attempts));
+      tr.appendChild(cell(f.error_class ?? "-"));
+      tr.appendChild(cell(f.last_error ?? "-"));
+
+      const actionTd = document.createElement("td");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "retry";
+      button.textContent = "Retry";
+      button.dataset.id = f.immich_id;
+      button.addEventListener("click", async () => {
+        await fetch(`/api/failures/${button.dataset.id}/retry`, { method: "POST" });
         load();
       });
-    });
+      actionTd.appendChild(button);
+      tr.appendChild(actionTd);
+
+      rows.appendChild(tr);
+    }
   }
   load();
 </script>

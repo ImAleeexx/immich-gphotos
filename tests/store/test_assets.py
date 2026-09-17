@@ -3,6 +3,7 @@ from datetime import timedelta
 import pytest
 
 from immich_gphotos.clock import FakeClock
+from immich_gphotos.logging import Redactor
 from immich_gphotos.models import Asset, AssetState, ErrorClass, Outcome, Priority
 from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.store.db import connect
@@ -233,6 +234,43 @@ def test_failed_assets_are_quarantined_not_reclaimed(repo):
     clock.advance(timedelta(days=1))
     assert r.claim_next(limit=5) == []
     assert r.get("a1").state is AssetState.FAILED
+
+
+SECRET_SHAPED = "androidId=1234567890abcdef&app=com.google.android.apps.photos"
+
+
+def test_mark_failed_redacts_secret_shaped_error_text(repo):
+    """Persisted error text must never carry a credential blob verbatim, even
+    without an explicit Redactor wired in -- the default still scrubs the
+    auth_data shape by pattern.
+    """
+    r, _ = repo
+    r.upsert_pending(make_asset(), Priority.WEBHOOK)
+    r.claim_next(limit=1)
+    r.mark_failed("a1", ErrorClass.UNKNOWN, f"gpmc error: {SECRET_SHAPED}")
+    stored = r.get("a1")
+    assert "1234567890abcdef" not in stored.last_error
+    assert "[redacted]" in stored.last_error
+
+
+def test_mark_retry_redacts_secret_shaped_error_text(repo):
+    r, clock = repo
+    r.upsert_pending(make_asset(), Priority.WEBHOOK)
+    r.claim_next(limit=1)
+    r.mark_retry("a1", ErrorClass.TRANSIENT, f"boom: {SECRET_SHAPED}", clock.now())
+    stored = r.get("a1")
+    assert "1234567890abcdef" not in stored.last_error
+    assert "[redacted]" in stored.last_error
+
+
+def test_mark_failed_redacts_a_registered_secret(tmp_path):
+    conn = connect(tmp_path / "test.db")
+    clock = FakeClock()
+    r = AssetRepo(conn, clock, redactor=Redactor(["my-immich-api-key"]))
+    r.upsert_pending(make_asset(), Priority.WEBHOOK)
+    r.claim_next(limit=1)
+    r.mark_failed("a1", ErrorClass.UNKNOWN, "auth failed for my-immich-api-key")
+    assert "my-immich-api-key" not in r.get("a1").last_error
 
 
 def test_ineligible_records_reason(repo):
