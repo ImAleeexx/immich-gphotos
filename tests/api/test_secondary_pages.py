@@ -24,3 +24,4 @@ def test_the_first_run_login_page_still_offers_to_set_a_password(rig_services):
 def test_diagnostics_has_an_empty_state_for_each_table(http):
     body = http.get("/diagnostics").text
     assert "No events yet" in body
+    assert "No workflow logs yet" in body

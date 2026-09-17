@@ -84,6 +84,19 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   }
 
+  // A rotated session token 307s /events to /login; EventSource then gets
+  // text/html back instead of text/event-stream and, per spec, closes the
+  // stream for good with no further retries. Without this, the page would
+  // sit forever on its last frame -- a green "Running" pill over stale
+  // counters -- with no sign it had lost contact.
+  function renderDisconnected() {
+    var pill = document.getElementById("hero-pill");
+    var sub = document.getElementById("hero-sub");
+    pill.className = "pill pill--danger";
+    pill.textContent = "Disconnected";
+    sub.textContent = "Lost contact with the server. Reload this page to reconnect.";
+  }
+
   function renderBackfill(backfill) {
     backfill = backfill || {};
     var meter = document.getElementById("backfill-meter");
@@ -151,7 +164,9 @@ document.addEventListener("DOMContentLoaded", function () {
     renderDirectReads(data.direct_reads_enabled);
   }
 
-  igp.subscribeStatus(render);
+  igp.subscribeStatus(render, function (readyState) {
+    if (readyState === EventSource.CLOSED) renderDisconnected();
+  });
 
   function renderReadinessCheck(check) {
     var item = document.createElement("li");
@@ -200,7 +215,13 @@ document.addEventListener("DOMContentLoaded", function () {
 
   function pollReadiness() {
     fetch("/api/readiness")
-      .then(function (response) { return response.json(); })
+      .then(function (response) {
+        // A 401 (session rotated) or any other non-OK response has a body
+        // with no `overall` and no `checks` -- feeding that to
+        // renderReadiness un-hides the panel and renders an empty list.
+        if (!response.ok) throw new Error("readiness request failed");
+        return response.json();
+      })
       .then(renderReadiness)
       .catch(function () {});
   }

@@ -1,7 +1,7 @@
 import hmac
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -43,7 +43,7 @@ def create_app(services: Services) -> FastAPI:
         return JSONResponse(status_code=422, content=jsonable_encoder({"detail": sanitized}))
 
     @app.exception_handler(404)
-    async def render_not_found(request: Request, exc) -> Response:
+    async def render_not_found(request: Request, exc: HTTPException) -> Response:
         """Starlette dispatches an HTTPException by status code before it
         ever looks at the exception type, so this handler sees every
         HTTPException(404) raised anywhere in the app -- not just the

@@ -34,7 +34,7 @@
       <span class="field__label">Propagate deletions</span>
       <label class="switch-row">
         <input type="checkbox" name="deletions_enabled" class="switch">
-        <span id="deletions-pill" class="pill pill--danger">Off</span>
+        <span id="deletions-pill" class="pill pill--ok">Off</span>
       </label>
       <p class="field__hint">When enabled, deleting an item in Immich moves the matching item in
         Google Photos to trash, where it stays recoverable for 60 days.</p>
@@ -71,19 +71,30 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function updateDeletionsPill() {
-    deletionsPill.textContent = form.deletions_enabled.checked ? "On" : "Off";
+    const on = form.deletions_enabled.checked;
+    deletionsPill.textContent = on ? "On" : "Off";
+    deletionsPill.classList.toggle("pill--danger", on);
+    deletionsPill.classList.toggle("pill--ok", !on);
   }
 
   async function load() {
-    const s = await (await fetch("/api/settings")).json();
-    form.quality.value = s.quality;
-    form.albums_enabled.checked = s.albums_enabled;
-    form.deletions_enabled.checked = s.deletions_enabled;
-    deletionsEnabledAtLoad = s.deletions_enabled;
-    confirmedPhrase = null;
-    form.worker_threads.value = s.worker_threads;
-    form.bandwidth_bytes_per_second.value = s.bandwidth_bytes_per_second ?? "";
-    updateDeletionsPill();
+    try {
+      const response = await fetch("/api/settings");
+      if (!response.ok) throw new Error("could not load settings");
+      const s = await response.json();
+      form.quality.value = s.quality;
+      form.albums_enabled.checked = s.albums_enabled;
+      form.deletions_enabled.checked = s.deletions_enabled;
+      deletionsEnabledAtLoad = s.deletions_enabled;
+      confirmedPhrase = null;
+      form.worker_threads.value = s.worker_threads;
+      form.bandwidth_bytes_per_second.value = s.bandwidth_bytes_per_second ?? "";
+      updateDeletionsPill();
+    } catch (err) {
+      formError.textContent = "Could not load settings. Reload this page to try again.";
+      formError.hidden = false;
+      submitButton.disabled = true;
+    }
   }
 
   // Turning deletions ON is the one direction that needs friction. Turning
