@@ -2,7 +2,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from immich_gphotos.store.schema import SCHEMA
+from immich_gphotos.store.schema import SCHEMA, apply_migrations
 
 
 class LockingConnection(sqlite3.Connection):
@@ -34,4 +34,5 @@ def connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    apply_migrations(conn)
     return conn

@@ -115,7 +115,7 @@ Treat that string like a password — it can't be rotated easily. This service r
 | **Workflow** | Registers the workflow inside Immich for you, with a generated shared secret. Nothing to build by hand. |
 | **Options** | Quality, albums, deletions, worker threads, bandwidth, and whether to start backfilling now. |
 
-Settings changed later take effect immediately — no restart.
+Settings changed later take effect immediately — no restart. That includes work already queued: changing or clearing the bandwidth cap releases any uploads that were deferred to wait out the old cap, so they are re-measured against the new one instead of serving out a sentence the cap they were charged under no longer justifies.
 
 ## Settings
 

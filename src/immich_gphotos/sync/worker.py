@@ -167,9 +167,15 @@ class Worker:
                     #
                     # Still in flight, so any charge already taken for it
                     # stands and the retry inside the window must not be
-                    # metered a second time.
-                    retain_prepaid = True
+                    # metered a second time -- but only once the requeue has
+                    # actually happened. If it raises (a locked database, a
+                    # full disk), this asset is *not* deferred: the exception
+                    # goes to `_handle_failure` below, and a flag set ahead of
+                    # the call would leave a stale id in `_throttle_prepaid`
+                    # for an asset with nothing in flight, so its next
+                    # successful attempt would skip metering entirely.
                     self._assets.requeue(asset.immich_id, self._clock.now() + WINDOW_RETRY_DELAY)
+                    retain_prepaid = True
                     return WorkerResult(
                         AssetState.PENDING, reason="deferred: outside the transfer window", deferred=True
                     )
@@ -187,11 +193,20 @@ class Worker:
                         # already been charged for this transfer
                         # (`_throttle_prepaid` remembers that, and this is the
                         # path that must keep it), so the retry that reclaims
-                        # it after `defer_wait` must not be metered again.
-                        retain_prepaid = True
-                        self._assets.requeue(
+                        # it after `defer_wait` must not be metered again --
+                        # but only once the requeue has actually happened, for
+                        # the same reason as the window branch above.
+                        #
+                        # `defer_for_bandwidth` rather than `requeue`: the
+                        # deadline below is arithmetic against the *current*
+                        # bandwidth cap, and is meaningless once that cap
+                        # changes, so the row is marked as such and a cap
+                        # change releases it (see
+                        # `AssetRepo.release_bandwidth_deferrals`).
+                        self._assets.defer_for_bandwidth(
                             asset.immich_id, self._clock.now() + timedelta(seconds=defer_wait)
                         )
+                        retain_prepaid = True
                         return WorkerResult(
                             AssetState.PENDING,
                             reason="deferred: bandwidth cap would block the loop too long",

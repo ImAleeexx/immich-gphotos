@@ -5,11 +5,15 @@ credentials -- proving the mechanism itself, independent of any particular
 route that triggers it.
 """
 
+from dataclasses import replace
+from datetime import timedelta
+
 from immich_gphotos.clock import FakeClock
 from immich_gphotos.composition import build_runtime_graph, rebuild_runtime
 from immich_gphotos.config import Settings
 from immich_gphotos.gphotos.fake import FakeGooglePhotosClient
 from immich_gphotos.immich.fake import FakeImmichClient
+from immich_gphotos.models import Asset, ErrorClass, Priority
 from immich_gphotos.services import Services
 from immich_gphotos.store.albums import AlbumRepo
 from immich_gphotos.store.assets import AssetRepo
@@ -17,9 +21,10 @@ from immich_gphotos.store.db import connect
 from immich_gphotos.store.events import EventRepo
 from immich_gphotos.store.kv import CursorRepo, SettingRepo
 from immich_gphotos.sync.loops import LoopsHandle
+from immich_gphotos.sync.worker import HALT_RETRY_DELAY
 
 
-def build(tmp_path, settings=None):
+def build(tmp_path, settings=None, immich=None):
     conn = connect(tmp_path / "t.db")
     clock = FakeClock()
     assets = AssetRepo(conn, clock)
@@ -27,7 +32,7 @@ def build(tmp_path, settings=None):
     cursors = CursorRepo(conn)
     events = EventRepo(conn, clock)
     settings = settings or Settings()
-    immich = FakeImmichClient()
+    immich = immich if immich is not None else FakeImmichClient()
     gphotos = FakeGooglePhotosClient()
     runtime, backfill, loops = build_runtime_graph(
         immich=immich,
@@ -280,3 +285,103 @@ def test_rebuild_closes_the_outgoing_runtimes_worker_pool(tmp_path):
 
     assert closed == [True]
     assert services.runtime is not old_runtime
+
+
+# --- I1: a bandwidth-cap change releases the work deferred under the old cap.
+
+THROTTLED_CONTENT = b"x" * 100
+
+
+def throttled_asset(asset_id: str) -> Asset:
+    return Asset(
+        immich_id=asset_id,
+        checksum=f"sum-{asset_id}",
+        filename=f"{asset_id}.jpg",
+        type="IMAGE",
+        size_bytes=len(THROTTLED_CONTENT),
+        immich_updated_at="2026-09-17T10:00:00Z",
+        original_path=None,
+        visibility="timeline",
+        is_offline=False,
+        is_trashed=False,
+    )
+
+
+def with_assets_deferred_under_a_cap(tmp_path, ids=("a1", "a2")):
+    """A running service whose queue holds `ids`, each parked on a deadline the
+    *current* cap produced -- via the real Worker the built graph wired up, not
+    a hand-written row. 100 bytes at 1 byte/second is a 99-second wait, well
+    over MAX_INLINE_THROTTLE_WAIT_SECONDS, so each one defers rather than
+    sleeping on the calling thread."""
+    immich = FakeImmichClient(contents=dict.fromkeys(ids, THROTTLED_CONTENT))
+    services = build(tmp_path, settings=Settings(bandwidth_bytes_per_second=1), immich=immich)
+    for asset_id in ids:
+        services.assets.upsert_pending(throttled_asset(asset_id), Priority.WEBHOOK)
+    for stored in services.assets.claim_next(limit=len(ids)):
+        assert services.runtime._worker.process(stored).deferred is True
+    assert services.assets.claim_next(limit=10) == []  # all parked on future deadlines
+    return services
+
+
+def test_clearing_the_bandwidth_cap_makes_assets_deferred_under_it_claimable_again(tmp_path):
+    """I1. A deferred upload's deadline is arithmetic against the cap that was
+    in force when it was metered, and nothing else ever revisits it -- not the
+    rebuild, not upsert_pending, not requeue_stale_uploading, not a restart
+    (the deadline is persisted; the debt justifying it is in memory). So
+    clearing the cap used to leave the whole deferred backlog serving out the
+    old cap's sentence, invisibly and with no way to undo it from the UI."""
+    services = with_assets_deferred_under_a_cap(tmp_path)
+
+    rebuild_runtime(services, settings=replace(services.settings, bandwidth_bytes_per_second=None))
+
+    assert [s.asset.immich_id for s in services.assets.claim_next(limit=10)] == ["a1", "a2"]
+
+
+def test_changing_the_bandwidth_cap_to_another_value_also_releases_assets_deferred_under_the_old_one(
+    tmp_path,
+):
+    """Not only clearing it: a cap that is raised (or lowered) is a different
+    cap, so the old cap's arithmetic is equally stale."""
+    services = with_assets_deferred_under_a_cap(tmp_path)
+
+    rebuild_runtime(services, settings=replace(services.settings, bandwidth_bytes_per_second=500_000))
+
+    assert [s.asset.immich_id for s in services.assets.claim_next(limit=10)] == ["a1", "a2"]
+
+
+def test_a_rebuild_that_does_not_touch_the_cap_leaves_deferred_assets_on_their_deadlines(tmp_path):
+    """The release is keyed to the cap actually changing. A settings save that
+    only changes the quality (or a wizard step that swaps a client) must not
+    dump the whole deferred backlog back into the queue at once -- that would
+    undo the throttle the user still has configured."""
+    services = with_assets_deferred_under_a_cap(tmp_path)
+    deadlines = {i: services.assets.get(i).next_attempt_at for i in ("a1", "a2")}
+
+    rebuild_runtime(services, settings=replace(services.settings, quality="saver"))
+
+    assert {i: services.assets.get(i).next_attempt_at for i in deadlines} == deadlines
+    assert services.assets.claim_next(limit=10) == []
+
+
+def test_a_cap_change_leaves_failure_backoff_halt_retry_and_window_deferrals_on_their_deadlines(tmp_path):
+    """I1's hard constraint, end to end. `next_attempt_at` is shared by four
+    defer reasons; only the bandwidth one may be released. The window defer is
+    driven through the real Worker (`transfer_allowed=False`); the halt retry
+    and the failure backoff are written with the exact repo calls
+    `Worker._handle_failure` makes for them."""
+    services = with_assets_deferred_under_a_cap(tmp_path, ids=("capped",))
+    assets, clock = services.assets, services.clock
+    for asset_id in ("backoff", "halted", "windowed"):
+        assets.upsert_pending(throttled_asset(asset_id), Priority.WEBHOOK)
+    claimed = {s.asset.immich_id: s for s in assets.claim_next(limit=3)}
+    assert services.runtime._worker.process(claimed["windowed"], transfer_allowed=False).deferred is True
+    assets.requeue("halted", clock.now() + HALT_RETRY_DELAY)
+    assets.mark_retry("backoff", ErrorClass.TRANSIENT, "boom", clock.now() + timedelta(minutes=5))
+    untouched = {i: assets.get(i).next_attempt_at for i in ("backoff", "halted", "windowed")}
+
+    rebuild_runtime(services, settings=replace(services.settings, bandwidth_bytes_per_second=None))
+
+    assert assets.get("capped").next_attempt_at is None
+    assert {i: assets.get(i).next_attempt_at for i in untouched} == untouched
+    assert assets.get("backoff").attempts == 1  # the backoff's own bookkeeping is intact
+    assert [s.asset.immich_id for s in assets.claim_next(limit=10)] == ["capped"]

@@ -13,9 +13,11 @@ That is what `rebuild_runtime` does. It is the live-swap mechanism described
 in the setup-wizard design: `Services` is deliberately not frozen, so its
 `runtime`/`backfill`/`immich`/`gphotos`/`settings` fields can be reassigned
 in place, and `LoopsHandle.replace` swaps the background thread onto a fresh
-`BackgroundLoops` without restarting that thread. Nothing in the database
-changes here -- cursors and queued assets are untouched -- only the
-in-memory object graph.
+`BackgroundLoops` without restarting that thread. The database is left alone
+-- cursors and queued assets are untouched -- with one deliberate exception:
+a change to the bandwidth cap releases the assets that were deferred against
+the *old* cap, whose deadlines nothing else would ever revisit. See the end
+of `rebuild_runtime`.
 """
 
 import threading
@@ -151,6 +153,7 @@ def rebuild_runtime(
     settings = settings if settings is not None else services.settings
     old_runtime = services.runtime
     old_immich = services.immich
+    old_bandwidth = services.settings.bandwidth_bytes_per_second
 
     # GpmcClient bakes `quality` in at construction and `upload()` reads it
     # from `self`, not from `Settings` -- so carrying the *existing* gphotos
@@ -196,6 +199,20 @@ def rebuild_runtime(
     services.backfill = backfill
     if services.loops_handle is not None:
         services.loops_handle.replace(loops)
+
+    # The one thing a rebuild has to change in the database. An upload whose
+    # metered wait was too long to sleep out inline is parked on a deadline
+    # computed from the cap that was in force when it was metered (see
+    # `Worker._throttle_upload` and `AssetRepo.defer_for_bandwidth`), and
+    # nothing else ever revisits that deadline -- not this rebuild, not
+    # `upsert_pending`, not `requeue_stale_uploading`, not a restart, since the
+    # deadline is persisted while the debt justifying it is in-memory. So a
+    # user who raises or removes the cap would go on waiting out the old one,
+    # up to weeks for a large backlog, with no way to undo it from the UI.
+    # Release those rows (and only those: failure backoffs, halt retries and
+    # window defers keep their deadlines) so the new cap re-meters them.
+    if old_bandwidth != settings.bandwidth_bytes_per_second:
+        services.assets.release_bandwidth_deferrals()
 
     # A real Runtime may own a worker-thread pool (see Runtime.close); shut
     # the outgoing one down so pool threads do not leak on every settings

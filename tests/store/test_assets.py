@@ -354,3 +354,90 @@ def test_stale_uploading_rows_are_requeued_after_a_crash(repo):
     clock.advance(timedelta(hours=2))
     assert r.requeue_stale_uploading(timedelta(hours=1)) == 1
     assert r.get("a1").state is AssetState.PENDING
+
+
+def test_release_clears_only_bandwidth_deferred_rows_leaving_backoff_halt_and_window_deadlines(repo):
+    """I1's hard constraint, at the storage layer. `next_attempt_at` carries
+    four different kinds of defer: a failure backoff (mark_retry), a halt
+    retry and a schedule-window defer (both `requeue`), and the bandwidth
+    defer. Only the last is arithmetic against the bandwidth cap, so only it
+    may be released when that cap changes -- blanket-clearing the others
+    would defeat the backoff and re-hammer a failing remote."""
+    r, clock = repo
+    for asset_id in ("capped", "backoff", "halted", "windowed"):
+        r.upsert_pending(make_asset(asset_id), Priority.WEBHOOK)
+    r.claim_next(limit=4)
+    r.defer_for_bandwidth("capped", clock.now() + timedelta(hours=9))
+    r.mark_retry("backoff", ErrorClass.TRANSIENT, "boom", clock.now() + timedelta(minutes=5))
+    r.requeue("halted", clock.now() + timedelta(minutes=10))
+    r.requeue("windowed", clock.now() + timedelta(minutes=15))
+    untouched = {i: r.get(i).next_attempt_at for i in ("backoff", "halted", "windowed")}
+
+    assert r.release_bandwidth_deferrals() == 1
+
+    assert r.get("capped").next_attempt_at is None
+    assert {i: r.get(i).next_attempt_at for i in untouched} == untouched
+    assert r.get("backoff").attempts == 1  # the backoff's own bookkeeping is intact
+    # Only the released row is claimable at this instant; the other three are
+    # still waiting out deadlines that have nothing to do with the cap.
+    assert [s.asset.immich_id for s in r.claim_next(limit=10)] == ["capped"]
+
+
+def test_a_release_leaves_the_failure_backoff_that_replaced_a_reclaimed_bandwidth_deferral(repo):
+    """The marker must not outlive the deferral it describes. Once the row is
+    claimed, the cap-derived deadline is gone, and whatever deadline that
+    attempt leaves behind (here a failure backoff) belongs to a different
+    mechanism -- releasing it on a later cap change would defeat that
+    backoff."""
+    r, clock = repo
+    r.upsert_pending(make_asset(), Priority.WEBHOOK)
+    r.claim_next(limit=1)
+    r.defer_for_bandwidth("a1", clock.now() + timedelta(hours=9))
+
+    clock.advance(timedelta(hours=10))
+    assert [s.asset.immich_id for s in r.claim_next(limit=1)] == ["a1"]
+    backoff_deadline = clock.now() + timedelta(minutes=5)
+    r.mark_retry("a1", ErrorClass.TRANSIENT, "boom", backoff_deadline)
+
+    assert r.release_bandwidth_deferrals() == 0
+    assert r.get("a1").next_attempt_at == backoff_deadline.isoformat()
+
+
+def test_a_database_written_before_the_bandwidth_marker_existed_gains_the_column_on_open(tmp_path):
+    """The marker column is new, and `CREATE TABLE IF NOT EXISTS` does
+    nothing to a table that already exists -- so an upgraded install would
+    otherwise keep an `asset` table without it and fail every defer. Build a
+    database from the schema as it was before the column, with a row already
+    in it, and open it through `connect`."""
+    import sqlite3
+
+    from immich_gphotos.store.schema import SCHEMA
+
+    legacy_schema = "\n".join(
+        line
+        for line in SCHEMA.splitlines()
+        if "bandwidth_deferred_at" not in line and not line.strip().startswith("--")
+    )
+    assert "bandwidth_deferred_at" not in legacy_schema
+    path = tmp_path / "old.db"
+    legacy = sqlite3.connect(path)
+    legacy.executescript(legacy_schema)
+    legacy.execute(
+        "INSERT INTO asset (immich_id, checksum, filename, type, immich_updated_at, visibility,"
+        " state, priority, first_seen_at) VALUES ('a1', ?, 'a1.jpg', 'IMAGE', '2026-09-17T10:00:00Z',"
+        " 'timeline', 'pending', 0, '2026-09-17T10:00:00Z')",
+        (CHECKSUM,),
+    )
+    legacy.commit()
+    legacy.close()
+
+    clock = FakeClock()
+    conn = connect(path)
+    r = AssetRepo(conn, clock)
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(asset)")}
+    assert "bandwidth_deferred_at" in columns
+    assert r.get("a1").state is AssetState.PENDING  # the existing row survives the upgrade
+    r.claim_next(limit=1)
+    r.defer_for_bandwidth("a1", clock.now() + timedelta(hours=9))
+    assert r.release_bandwidth_deferrals() == 1

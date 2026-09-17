@@ -139,7 +139,8 @@ class AssetRepo:
         now = self._clock.now().isoformat()
         with self._conn.lock:
             rows = self._conn.execute(
-                "UPDATE asset SET state = ?, claimed_at = ? WHERE immich_id IN ("
+                "UPDATE asset SET state = ?, claimed_at = ?, bandwidth_deferred_at = NULL"
+                " WHERE immich_id IN ("
                 "  SELECT immich_id FROM asset WHERE state = ?"
                 "   AND (next_attempt_at IS NULL OR next_attempt_at <= ?)"
                 "   ORDER BY priority ASC, first_seen_at ASC LIMIT ?"
@@ -197,6 +198,55 @@ class AssetRepo:
                 "UPDATE asset SET state = ?, next_attempt_at = ?, claimed_at = NULL WHERE immich_id = ?",
                 (AssetState.PENDING.value, next_attempt_at.isoformat(), immich_id),
             )
+
+    def defer_for_bandwidth(self, immich_id: str, next_attempt_at: datetime) -> None:
+        """Requeue a row whose upload wait was too long to sleep out inline,
+        marking the deadline as derived from the bandwidth cap.
+
+        Same as `requeue` (no attempt counted -- a cap the user configured is
+        not the asset's fault) plus the marker. The marker is what lets a
+        later cap change release exactly these rows: `next_attempt_at` alone
+        cannot be told apart from a failure backoff, a halt retry or a
+        schedule-window defer, and blanket-clearing those would defeat the
+        backoff and re-hammer a failing remote. It is cleared again by
+        `claim_next` the moment the row is picked up, so it only ever marks a
+        row that is genuinely still parked on a cap-derived deadline.
+        """
+        with self._conn.lock:
+            self._conn.execute(
+                "UPDATE asset SET state = ?, next_attempt_at = ?, bandwidth_deferred_at = ?,"
+                " claimed_at = NULL WHERE immich_id = ?",
+                (
+                    AssetState.PENDING.value,
+                    next_attempt_at.isoformat(),
+                    self._clock.now().isoformat(),
+                    immich_id,
+                ),
+            )
+
+    def release_bandwidth_deferrals(self) -> int:
+        """Make every row parked on a cap-derived deadline claimable again.
+
+        Called when the bandwidth cap setting changes (including being
+        cleared), because those deadlines were arithmetic against the *old*
+        cap: nothing else ever revisits them, so a user who raises or removes
+        a cap would otherwise keep waiting out the old one -- days or weeks
+        for a large backlog -- with no way to fix it short of editing the
+        database by hand. The bucket is rebuilt with the graph, so the
+        released rows are simply re-metered against the new cap (or not
+        metered at all, if it was cleared) on their next claim.
+
+        Only rows carrying the `bandwidth_deferred_at` marker are touched, so
+        failure backoffs, halt retries and schedule-window defers keep their
+        deadlines. Returns how many rows were released.
+        """
+        with self._conn.lock:
+            cur = self._conn.execute(
+                "UPDATE asset SET next_attempt_at = NULL, bandwidth_deferred_at = NULL"
+                " WHERE state = ? AND bandwidth_deferred_at IS NOT NULL",
+                (AssetState.PENDING.value,),
+            )
+            return cur.rowcount
 
     def mark_failed(self, immich_id: str, error_class: ErrorClass, message: str) -> None:
         message = self._redactor.scrub(message)

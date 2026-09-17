@@ -1,3 +1,4 @@
+import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta
 
@@ -402,4 +403,75 @@ def test_a_deferred_asset_that_then_becomes_ineligible_drops_its_prepaid_entry(t
 
     assert result.state is AssetState.INELIGIBLE
     assert result.reason == "trashed"
+    assert worker._throttle_prepaid == set()
+
+
+class FailingDeferRepo(AssetRepo):
+    """An AssetRepo whose defer writes fail the way a locked database or a full
+    disk would -- every other call still works, so the failure path is the real
+    one (`_handle_failure` writing a retry row through this same repo)."""
+
+    def __init__(self, *args, fail: str, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._fail = fail
+
+    def defer_for_bandwidth(self, immich_id, next_attempt_at):
+        if self._fail == "bandwidth":
+            raise sqlite3.OperationalError("database is locked")
+        super().defer_for_bandwidth(immich_id, next_attempt_at)
+
+    def requeue(self, immich_id, next_attempt_at):
+        if self._fail == "window":
+            raise sqlite3.OperationalError("database is locked")
+        super().requeue(immich_id, next_attempt_at)
+
+
+def _failing_defer_rig(tmp_path, fail: str):
+    clock = FakeClock()
+    content = b"x" * 10_000
+    assets = FailingDeferRepo(connect(tmp_path / "t.db"), clock, fail=fail)
+    worker = Worker(
+        assets,
+        FakeGooglePhotosClient(),
+        ByteResolver(FakeImmichClient(contents={"a1": content}), scratch=tmp_path / "scratch"),
+        Filters(),
+        RetryPolicy(jitter=0.0),
+        clock,
+        bandwidth=TokenBucket(rate_bytes_per_second=100, clock=clock),
+        sleep=[].append,
+    )
+    return worker, assets, clock, replace(ASSET, size_bytes=len(content))
+
+
+def test_a_bandwidth_defer_whose_write_fails_leaves_no_prepaid_entry_behind(tmp_path):
+    """M1. The defer is only real once the row is actually written. If that
+    write raises, the exception is caught by `process`'s handler and the asset
+    is retried like any other failure -- it is *not* deferred and nothing is in
+    flight for it. Marking it prepaid before the write meant the id stayed in
+    `_throttle_prepaid` regardless, and the asset's next successful attempt
+    short-circuited the throttle and uploaded a whole file unmetered."""
+    worker, assets, _, big = _failing_defer_rig(tmp_path, fail="bandwidth")
+
+    result = worker.process(claim(assets, big))
+
+    assert result.deferred is False
+    assert result.state is AssetState.PENDING  # retried as an ordinary failure
+    assert assets.get("a1").attempts == 1
+    assert worker._throttle_prepaid == set()
+
+
+def test_a_window_defer_whose_write_fails_leaves_no_prepaid_entry_behind(tmp_path):
+    """M1, at the other defer site: the schedule-window branch sets the same
+    flag around the same kind of write, so it must order them the same way.
+    The asset is charged against the bucket by an earlier deferred attempt, so
+    its id is in `_throttle_prepaid` when the window defer fails to write."""
+    worker, assets, clock, big = _failing_defer_rig(tmp_path, fail="window")
+    assert worker.process(claim(assets, big)).deferred is True
+    assert worker._throttle_prepaid == {"a1"}
+    clock.advance(timedelta(seconds=99))
+
+    result = worker.process(assets.claim_next(limit=1)[0], transfer_allowed=False)
+
+    assert result.deferred is False
+    assert result.state is AssetState.PENDING  # retried as an ordinary failure
     assert worker._throttle_prepaid == set()
