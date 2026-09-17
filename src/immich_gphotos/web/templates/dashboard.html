@@ -1,60 +1,212 @@
 {% extends "base.html" %}
 {% set nav_active = "dashboard" %}
+{% block page_title %}Dashboard · immich-gphotos{% endblock %}
 {% block content %}
-<h1>Dashboard</h1>
-<div id="pause-banner" class="banner hidden"></div>
-<section class="cards">
-  <div class="card"><span id="c-pending">-</span><label>Pending</label></div>
-  <div class="card"><span id="c-synced">-</span><label>Synced</label></div>
-  <div class="card"><span id="c-failed">-</span><label>Failed</label></div>
-  <div class="card"><span id="c-quarantined">-</span><label>Quarantined</label></div>
-</section>
-<section class="card">
-  <h2>Backfill</h2>
-  <p id="backfill-status">-</p>
-</section>
-<section class="card">
-  <h2>Byte resolution</h2>
-  <p id="direct-reads-status">-</p>
-</section>
-<section class="card">
-  <h2>Recent activity</h2>
-  <ul id="activity"></ul>
-</section>
-<script>
-  const source = new EventSource("/events");
-  source.onmessage = (event) => {
-    const data = JSON.parse(event.data);
-    const counts = data.counts || {};
-    document.getElementById("c-pending").textContent = counts.pending ?? 0;
-    document.getElementById("c-synced").textContent = counts.synced ?? 0;
-    document.getElementById("c-failed").textContent = counts.failed ?? 0;
-    document.getElementById("c-quarantined").textContent = counts.quarantined ?? 0;
+<div class="stagger">
+  <section class="hero panel panel--raised" aria-labelledby="hero-heading">
+    <div class="hero__head">
+      <div>
+        <h1 id="hero-heading">Library mirror</h1>
+        <p class="hero__sub" id="hero-sub">Checking status…</p>
+      </div>
+      <span class="pill pill--pending" id="hero-pill">Connecting</span>
+    </div>
+    <dl class="counters">
+      <div class="counter"><dt>Pending</dt><dd class="num" id="c-pending">—</dd></div>
+      <div class="counter"><dt>Synced</dt><dd class="num" id="c-synced">—</dd></div>
+      <div class="counter"><dt>Failed</dt><dd class="num" id="c-failed">—</dd></div>
+      <div class="counter"><dt>Ineligible</dt><dd class="num" id="c-ineligible">—</dd></div>
+    </dl>
+    <div class="meter" id="backfill-meter" hidden>
+      <div class="meter__bar"><span class="meter__fill" id="backfill-fill"></span></div>
+      <p class="meter__label num" id="backfill-status">Not running</p>
+    </div>
+  </section>
 
-    const banner = document.getElementById("pause-banner");
+  <section id="readiness" class="panel" aria-labelledby="readiness-heading" hidden>
+    <h2 id="readiness-heading">Before this is working</h2>
+    <ul class="checks" id="readiness-list"></ul>
+  </section>
+
+  <div class="grid grid--7-5">
+    <section class="panel" aria-labelledby="activity-heading">
+      <h2 id="activity-heading">Recent activity</h2>
+      <ol class="feed" id="activity">
+        <li class="feed__empty">Nothing yet. Events appear here as assets move.</li>
+      </ol>
+    </section>
+    <aside class="panel" aria-labelledby="bytes-heading">
+      <h2 id="bytes-heading">Byte resolution</h2>
+      <p id="direct-reads-status">—</p>
+    </aside>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+
+  var lastEventsKey = null;
+
+  // The stylesheet only defines pill--ok/warn/danger/pending; neither the
+  // event log's levels (info/warn/error) nor the readiness states
+  // (ok/pending/attention) match that set one-to-one, so both are mapped
+  // onto it here rather than emitting an unstyled pill--info/error/attention.
+  function levelPillClass(level) {
+    if (level === "error") return "pill--danger";
+    if (level === "warn") return "pill--warn";
+    return "pill--ok";
+  }
+
+  function statePillClass(state) {
+    if (state === "attention") return "pill--danger";
+    if (state === "pending") return "pill--pending";
+    return "pill--ok";
+  }
+
+  function renderCounters(counts) {
+    igp.countUp(document.getElementById("c-pending"), counts.pending || 0);
+    igp.countUp(document.getElementById("c-synced"), counts.synced || 0);
+    igp.countUp(document.getElementById("c-failed"), counts.failed || 0);
+    igp.countUp(document.getElementById("c-ineligible"), counts.ineligible || 0);
+  }
+
+  function renderHero(data) {
+    var pill = document.getElementById("hero-pill");
+    var sub = document.getElementById("hero-sub");
     if (data.paused_reason) {
-      banner.textContent = "Paused: " + data.paused_reason;
-      banner.classList.remove("hidden");
+      pill.className = "pill pill--danger";
+      pill.textContent = "Paused";
+      sub.textContent = data.paused_reason;
     } else {
-      banner.classList.add("hidden");
+      pill.className = "pill pill--ok";
+      pill.textContent = "Running";
+      sub.textContent = "Assets transfer as Immich reports them.";
+    }
+  }
+
+  function renderBackfill(backfill) {
+    backfill = backfill || {};
+    var meter = document.getElementById("backfill-meter");
+    var status = document.getElementById("backfill-status");
+    if (backfill.running) {
+      meter.hidden = false;
+      status.textContent = "Resuming from page " + backfill.page;
+    } else {
+      meter.hidden = true;
+      status.textContent = "Not running";
+    }
+  }
+
+  function renderActivity(events) {
+    events = events || [];
+    var key = events.map(function (e) { return e.ts + "|" + e.message; }).join("\n");
+    if (key === lastEventsKey) return;
+    lastEventsKey = key;
+
+    var list = document.getElementById("activity");
+    list.textContent = "";
+    if (!events.length) {
+      var empty = document.createElement("li");
+      empty.className = "feed__empty";
+      empty.textContent = "Nothing yet. Events appear here as assets move.";
+      list.appendChild(empty);
+      return;
     }
 
-    const backfill = data.backfill || {};
-    document.getElementById("backfill-status").textContent = backfill.running
-      ? "Running (resuming from page " + backfill.page + ")"
-      : "Not running";
+    // events.recent() already orders newest first.
+    events.forEach(function (event) {
+      var item = document.createElement("li");
+      item.className = "feed__item";
 
-    document.getElementById("direct-reads-status").textContent = data.direct_reads_enabled
+      var time = document.createElement("span");
+      time.className = "feed__time num";
+      time.textContent = event.ts;
+
+      var pill = document.createElement("span");
+      pill.className = "pill " + levelPillClass(event.level);
+      pill.textContent = event.level;
+
+      var message = document.createElement("span");
+      message.className = "feed__message";
+      message.textContent = event.message;
+
+      item.appendChild(time);
+      item.appendChild(pill);
+      item.appendChild(message);
+      list.appendChild(item);
+    });
+  }
+
+  function renderDirectReads(enabled) {
+    document.getElementById("direct-reads-status").textContent = enabled
       ? "Enabled — readable originals skip the Immich API download."
       : "Disabled — every original is downloaded through the Immich API.";
+  }
 
-    const activity = document.getElementById("activity");
-    const item = document.createElement("li");
-    item.textContent = new Date().toLocaleTimeString() + " - status refreshed";
-    activity.prepend(item);
-    while (activity.children.length > 20) {
-      activity.removeChild(activity.lastChild);
+  function render(data) {
+    renderCounters(data.counts || {});
+    renderHero(data);
+    renderBackfill(data.backfill);
+    renderActivity(data.events);
+    renderDirectReads(data.direct_reads_enabled);
+  }
+
+  igp.subscribeStatus(render);
+
+  function renderReadinessCheck(check) {
+    var item = document.createElement("li");
+    item.className = "check";
+
+    var pill = document.createElement("span");
+    pill.className = "pill " + statePillClass(check.state);
+    pill.textContent = check.label;
+
+    var detail = document.createElement("span");
+    detail.className = "check__detail";
+    detail.textContent = check.detail;
+
+    item.appendChild(pill);
+    item.appendChild(detail);
+
+    if (check.action_href) {
+      var link = document.createElement("a");
+      link.className = "btn btn--quiet check__action";
+      link.href = check.action_href;
+      link.textContent = check.action_label || "Fix";
+      item.appendChild(link);
     }
-  };
+
+    return item;
+  }
+
+  function renderReadiness(data) {
+    var section = document.getElementById("readiness");
+    var list = document.getElementById("readiness-list");
+    section.hidden = false;
+    list.textContent = "";
+
+    if (data.overall === "ready") {
+      var done = document.createElement("li");
+      done.className = "check check--done";
+      done.textContent = "All checks pass. New assets transfer as Immich reports them.";
+      list.appendChild(done);
+      return;
+    }
+
+    (data.checks || []).forEach(function (check) {
+      list.appendChild(renderReadinessCheck(check));
+    });
+  }
+
+  function pollReadiness() {
+    fetch("/api/readiness")
+      .then(function (response) { return response.json(); })
+      .then(renderReadiness)
+      .catch(function () {});
+  }
+
+  pollReadiness();
+  setInterval(pollReadiness, 15000);
+})();
 </script>
 {% endblock %}
