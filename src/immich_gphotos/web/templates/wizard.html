@@ -64,6 +64,8 @@
     </label>
     <label><input type="checkbox" name="albums_enabled" checked> Sync albums</label>
     <label><input type="checkbox" name="deletions_enabled"> Propagate deletions</label>
+    <p class="hint">When enabled, deleting an item in Immich moves the matching item in
+      Google Photos to trash, where it stays recoverable for 60 days.</p>
     <label>Worker threads <input type="number" name="worker_threads" min="1" max="16" value="2"></label>
     <label>Bandwidth (bytes/sec, blank = unlimited) <input type="number" name="bandwidth_bytes_per_second" min="0"></label>
     <label><input type="checkbox" name="start_backfill" checked> Start backfilling existing assets now</label>
@@ -141,20 +143,41 @@
     }
   });
 
+  // Must match immich_gphotos.api.routes.DELETIONS_ENABLE_PHRASE exactly --
+  // the server rejects anything else when turning deletions on. The wizard
+  // always starts from off, so any checked box here is an enabling
+  // transition and needs the typed phrase.
+  const DELETIONS_ENABLE_PHRASE = "ENABLE DELETIONS";
+
   document.getElementById("options-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.target;
+    const body = {
+      quality: form.quality.value,
+      albums_enabled: form.albums_enabled.checked,
+      deletions_enabled: form.deletions_enabled.checked,
+      worker_threads: Number(form.worker_threads.value),
+      bandwidth_bytes_per_second: form.bandwidth_bytes_per_second.value
+        ? Number(form.bandwidth_bytes_per_second.value)
+        : null,
+      start_backfill: form.start_backfill.checked,
+    };
+    if (form.deletions_enabled.checked) {
+      const typed = window.prompt(
+        "Enabling deletion propagation: deleting an item in Immich will move the " +
+          "matching item in Google Photos to trash, where it stays recoverable for " +
+          "60 days.\n\n" +
+          `Type "${DELETIONS_ENABLE_PHRASE}" to confirm:`,
+      );
+      if (typed !== DELETIONS_ENABLE_PHRASE) {
+        form.deletions_enabled.checked = false;
+        report("options-status", "Deletion propagation left off (confirmation not given).", false);
+        return;
+      }
+      body.confirm_deletions = typed;
+    }
     try {
-      const result = await submitJson("/api/wizard/options", {
-        quality: form.quality.value,
-        albums_enabled: form.albums_enabled.checked,
-        deletions_enabled: form.deletions_enabled.checked,
-        worker_threads: Number(form.worker_threads.value),
-        bandwidth_bytes_per_second: form.bandwidth_bytes_per_second.value
-          ? Number(form.bandwidth_bytes_per_second.value)
-          : null,
-        start_backfill: form.start_backfill.checked,
-      });
+      const result = await submitJson("/api/wizard/options", body);
       report("options-status", result.backfill_started ? "Saved. Backfill started." : "Saved.", true);
     } catch (err) {
       report("options-status", err.message, false);

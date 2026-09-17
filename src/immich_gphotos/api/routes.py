@@ -20,13 +20,41 @@ SETTING_KEY = "settings"
 MIN_WORKER_THREADS = 1
 MAX_WORKER_THREADS = 16
 
+# Spec: deletion propagation is "off by default, behind an explicit toggle
+# with typed confirmation" -- this is the only setting in the project that
+# can destroy a user's data. The exact phrase the caller must echo back to
+# turn it on; turning it off is never gated.
+DELETIONS_ENABLE_PHRASE = "ENABLE DELETIONS"
+
 
 class SettingsPatch(BaseModel):
     quality: Quality | None = None
     albums_enabled: bool | None = None
     deletions_enabled: bool | None = None
+    confirm_deletions: str | None = None
     worker_threads: int | None = Field(default=None, ge=MIN_WORKER_THREADS, le=MAX_WORKER_THREADS)
     bandwidth_bytes_per_second: int | None = Field(default=None, ge=0)
+
+
+def require_deletion_confirmation(patch: SettingsPatch, *, currently_enabled: bool) -> None:
+    """Guard the one direction that matters: turning deletion propagation ON.
+
+    Only a patch that actually flips deletions_enabled from off to on needs
+    the typed phrase. Disabling stays frictionless (never gated), and a save
+    that merely keeps an already-enabled toggle on (e.g. the settings page
+    resubmitting the whole form to change worker_threads) is not "enabling"
+    anything and does not re-demand the phrase.
+    """
+    if patch.deletions_enabled is not True or currently_enabled:
+        return
+    if patch.confirm_deletions != DELETIONS_ENABLE_PHRASE:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "enabling deletion propagation requires confirm_deletions to be "
+                f'exactly "{DELETIONS_ENABLE_PHRASE}"'
+            ),
+        )
 
 
 def status_snapshot(services: Services) -> dict[str, Any]:
@@ -93,7 +121,8 @@ def get_settings(request: Request) -> dict:
 @router.put("/settings")
 def put_settings(patch: SettingsPatch, request: Request) -> dict:
     services: Services = request.app.state.services
-    updates = patch.model_dump(exclude_none=True)
+    require_deletion_confirmation(patch, currently_enabled=services.settings.deletions_enabled)
+    updates = patch.model_dump(exclude_none=True, exclude={"confirm_deletions"})
     stored = dict(services.settings_repo.get(SETTING_KEY) or {})
     stored.update(updates)
     services.settings_repo.set(SETTING_KEY, stored)

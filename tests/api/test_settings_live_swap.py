@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from immich_gphotos.api.app import create_app
 from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
+from immich_gphotos.api.routes import DELETIONS_ENABLE_PHRASE
 from immich_gphotos.main import build_services
 
 
@@ -48,7 +49,10 @@ def test_get_settings_reports_the_running_value_not_a_stale_stored_one(tmp_path)
     service is actually using."""
     http, services, _ = _rig(tmp_path)
 
-    put_response = http.put("/api/settings", json={"deletions_enabled": True})
+    put_response = http.put(
+        "/api/settings",
+        json={"deletions_enabled": True, "confirm_deletions": DELETIONS_ENABLE_PHRASE},
+    )
     assert put_response.status_code == 200
 
     get_response = http.get("/api/settings")
@@ -68,3 +72,64 @@ def test_worker_thread_settings_also_flow_through_the_live_swap(tmp_path):
     assert services.settings.worker_threads == 7
     assert services.settings.quality == "quota"
     assert loops_handle.current._runtime._settings.worker_threads == 7
+
+
+# --- Deletion propagation's typed confirmation (spec: "Off by default, ------
+# behind an explicit toggle with typed confirmation") -----------------------
+
+
+def test_enabling_deletions_without_confirmation_is_rejected_and_nothing_is_stored(tmp_path):
+    http, services, _ = _rig(tmp_path)
+
+    response = http.put("/api/settings", json={"deletions_enabled": True})
+
+    assert response.status_code == 422
+    assert services.settings.deletions_enabled is False
+    assert services.settings_repo.get("settings") is None
+
+
+def test_enabling_deletions_with_the_wrong_phrase_is_rejected(tmp_path):
+    http, services, _ = _rig(tmp_path)
+
+    response = http.put(
+        "/api/settings",
+        json={"deletions_enabled": True, "confirm_deletions": "yes, enable it"},
+    )
+
+    assert response.status_code == 422
+    assert services.settings.deletions_enabled is False
+
+
+def test_enabling_deletions_with_the_exact_phrase_succeeds(tmp_path):
+    http, services, loops_handle = _rig(tmp_path)
+
+    response = http.put(
+        "/api/settings",
+        json={"deletions_enabled": True, "confirm_deletions": DELETIONS_ENABLE_PHRASE},
+    )
+
+    assert response.status_code == 200
+    assert services.settings.deletions_enabled is True
+    assert loops_handle.current._deletion_sweeper._settings.deletions_enabled is True
+
+
+def test_disabling_deletions_needs_no_confirmation(tmp_path):
+    http, services, _ = _rig(tmp_path, initial_settings={"deletions_enabled": True})
+
+    response = http.put("/api/settings", json={"deletions_enabled": False})
+
+    assert response.status_code == 200
+    assert services.settings.deletions_enabled is False
+
+
+def test_resaving_while_already_enabled_does_not_re_demand_the_phrase(tmp_path):
+    """The settings page always submits the whole form, so an unrelated save
+    (e.g. worker_threads) resubmits deletions_enabled: true unchanged. That is
+    not a new "enable" and must not be blocked for lacking the phrase."""
+    http, services, _ = _rig(tmp_path, initial_settings={"deletions_enabled": True})
+
+    response = http.put("/api/settings", json={"deletions_enabled": True, "worker_threads": 4})
+
+    assert response.status_code == 200
+    assert services.settings.deletions_enabled is True
+    assert services.settings.worker_threads == 4

@@ -11,6 +11,8 @@
   </label>
   <label><input type="checkbox" name="albums_enabled"> Sync albums</label>
   <label><input type="checkbox" name="deletions_enabled"> Propagate deletions</label>
+  <p class="hint">When enabled, deleting an item in Immich moves the matching item in Google
+    Photos to trash, where it stays recoverable for 60 days.</p>
   <label>Worker threads
     <input type="number" name="worker_threads" min="1" max="16">
   </label>
@@ -21,15 +23,46 @@
 </form>
 <script>
   const form = document.getElementById("settings-form");
+  // Must match immich_gphotos.api.routes.DELETIONS_ENABLE_PHRASE exactly --
+  // the server rejects anything else when turning deletions on.
+  const DELETIONS_ENABLE_PHRASE = "ENABLE DELETIONS";
+
+  let deletionsEnabledAtLoad = false;
+  let confirmedPhrase = null;
 
   async function load() {
     const s = await (await fetch("/api/settings")).json();
     form.quality.value = s.quality;
     form.albums_enabled.checked = s.albums_enabled;
     form.deletions_enabled.checked = s.deletions_enabled;
+    deletionsEnabledAtLoad = s.deletions_enabled;
+    confirmedPhrase = null;
     form.worker_threads.value = s.worker_threads;
     form.bandwidth_bytes_per_second.value = s.bandwidth_bytes_per_second ?? "";
   }
+
+  // Turning deletions ON is the one direction that needs friction. Turning
+  // it off must stay a single click, so this only intercepts the
+  // off-to-on transition.
+  form.deletions_enabled.addEventListener("change", () => {
+    if (!form.deletions_enabled.checked) {
+      confirmedPhrase = null;
+      return;
+    }
+    if (deletionsEnabledAtLoad) return; // already on; nothing new to confirm
+    const typed = window.prompt(
+      "Enabling deletion propagation: deleting an item in Immich will move the " +
+        "matching item in Google Photos to trash, where it stays recoverable for " +
+        "60 days.\n\n" +
+        `Type "${DELETIONS_ENABLE_PHRASE}" to confirm:`,
+    );
+    if (typed === DELETIONS_ENABLE_PHRASE) {
+      confirmedPhrase = typed;
+    } else {
+      confirmedPhrase = null;
+      form.deletions_enabled.checked = false;
+    }
+  });
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -42,11 +75,18 @@
         ? Number(form.bandwidth_bytes_per_second.value)
         : null,
     };
-    await fetch("/api/settings", {
+    if (form.deletions_enabled.checked && !deletionsEnabledAtLoad) {
+      body.confirm_deletions = confirmedPhrase || "";
+    }
+    const response = await fetch("/api/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      alert((data && data.detail) || "settings update failed");
+    }
     load();
   });
 

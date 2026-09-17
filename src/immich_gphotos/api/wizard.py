@@ -20,7 +20,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from immich_gphotos.api.routes import SETTING_KEY as CONFIG_SETTING_KEY
-from immich_gphotos.api.routes import SettingsPatch
+from immich_gphotos.api.routes import SettingsPatch, require_deletion_confirmation
 from immich_gphotos.composition import rebuild_runtime
 from immich_gphotos.gphotos.client import GpmcClient
 from immich_gphotos.immich.client import HttpImmichClient
@@ -179,7 +179,8 @@ def wizard_workflow(payload: WorkflowRequest, request: Request) -> dict:
 @router.post("/options")
 def wizard_options(payload: WizardOptions, request: Request) -> dict:
     services: Services = request.app.state.services
-    updates = payload.model_dump(exclude={"start_backfill"}, exclude_none=True)
+    require_deletion_confirmation(payload, currently_enabled=services.settings.deletions_enabled)
+    updates = payload.model_dump(exclude={"start_backfill", "confirm_deletions"}, exclude_none=True)
 
     if updates:
         stored = dict(services.settings_repo.get(CONFIG_SETTING_KEY) or {})
