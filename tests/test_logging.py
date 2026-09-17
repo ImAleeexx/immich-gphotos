@@ -29,3 +29,11 @@ def test_configure_logging_emits_json_and_redacts(capsys):
     record = json.loads(line)
     assert record["level"] == "INFO"
     assert "hunter2" not in record["message"]
+
+
+def test_configure_logging_redacts_the_logger_name(capsys):
+    configure_logging("INFO", secrets=["hunter2"])
+    logging.getLogger("hunter2").info("hello")
+    line = capsys.readouterr().err.strip().splitlines()[-1]
+    record = json.loads(line)
+    assert "hunter2" not in record["logger"]

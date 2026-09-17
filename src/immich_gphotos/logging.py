@@ -31,7 +31,7 @@ class JsonFormatter(logging.Formatter):
         payload = {
             "ts": self.formatTime(record),
             "level": record.levelname,
-            "logger": record.name,
+            "logger": self._redactor.scrub(record.name),
             "message": self._redactor.scrub(record.getMessage()),
         }
         if record.exc_info:
