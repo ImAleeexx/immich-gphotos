@@ -137,6 +137,18 @@ class AssetRepo:
                 ),
             )
 
+    def requeue(self, immich_id: str, next_attempt_at: datetime) -> None:
+        """Return a row to pending WITHOUT counting an attempt.
+
+        Used when the failure belongs to the account rather than the asset, so a
+        long credential outage cannot quarantine the whole library.
+        """
+        with self._conn.lock:
+            self._conn.execute(
+                "UPDATE asset SET state = ?, next_attempt_at = ?, claimed_at = NULL WHERE immich_id = ?",
+                (AssetState.PENDING.value, next_attempt_at.isoformat(), immich_id),
+            )
+
     def mark_failed(self, immich_id: str, error_class: ErrorClass, message: str) -> None:
         with self._conn.lock:
             self._conn.execute(
