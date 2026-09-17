@@ -8,6 +8,7 @@ from typing import get_args
 from immich_gphotos.api.app import create_app
 from immich_gphotos.api.routes import MAX_WORKER_THREADS, MIN_WORKER_THREADS, SETTING_KEY
 from immich_gphotos.clock import SystemClock
+from immich_gphotos.composition import build_runtime_graph
 from immich_gphotos.config import Quality, Settings
 from immich_gphotos.gphotos.client import GpmcClient
 from immich_gphotos.gphotos.fake import FakeGooglePhotosClient
@@ -16,25 +17,19 @@ from immich_gphotos.immich.fake import FakeImmichClient
 from immich_gphotos.logging import Redactor, configure_logging
 from immich_gphotos.services import Services
 from immich_gphotos.setup.wizard import Wizard
+from immich_gphotos.storage_keys import (
+    GOOGLE_AUTH_KEY,
+    IMMICH_KEY_KEY,
+    IMMICH_URL_KEY,
+    SECRET_KEY,
+    WORKFLOW_ID_KEY,
+)
 from immich_gphotos.store.albums import AlbumRepo
 from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.store.db import connect
 from immich_gphotos.store.events import EventRepo
 from immich_gphotos.store.kv import CursorRepo, SettingRepo
-from immich_gphotos.sync.albums import AlbumMirror
-from immich_gphotos.sync.backfill import BackfillJob
-from immich_gphotos.sync.bytes import ByteResolver
-from immich_gphotos.sync.deletions import DeletionSweeper
-from immich_gphotos.sync.loops import STALE_UPLOAD_AGE, BackgroundLoops
-from immich_gphotos.sync.reconciler import Reconciler
-from immich_gphotos.sync.runtime import Runtime
-from immich_gphotos.sync.worker import Worker
-
-SECRET_KEY = "webhook_secret"
-IMMICH_URL_KEY = "immich_url"
-IMMICH_KEY_KEY = "immich_api_key"
-GOOGLE_AUTH_KEY = "google_auth_data"
-WORKFLOW_ID_KEY = "workflow_id"
+from immich_gphotos.sync.loops import STALE_UPLOAD_AGE, LoopsHandle
 
 _QUALITIES = frozenset(get_args(Quality))
 
@@ -78,7 +73,7 @@ def _merged_settings(immich_url: str, stored: object) -> Settings:
     return replace(Settings(immich_url=immich_url), **overrides)
 
 
-def build_services(data_dir: Path, env: Mapping[str, str] | None = None) -> tuple[Services, BackgroundLoops]:
+def build_services(data_dir: Path, env: Mapping[str, str] | None = None) -> tuple[Services, LoopsHandle]:
     """Compose everything. Credentials come from the database, never from env."""
     env = env if env is not None else os.environ
     clock = SystemClock()
@@ -95,14 +90,15 @@ def build_services(data_dir: Path, env: Mapping[str, str] | None = None) -> tupl
 
     api_key = settings_repo.get(IMMICH_KEY_KEY)
     auth_data = settings_repo.get(GOOGLE_AUTH_KEY)
-    configure_logging(env.get("IGP_LOG_LEVEL", "INFO"), secrets=[secret, api_key, auth_data])
 
-    # The same Redactor instance backs the persisted stores (AssetRepo.last_error,
-    # EventRepo.add) as backs the logging handler above, so credential text is
-    # scrubbed the same way wherever it might land. `logging.py` sits alongside
-    # `store/`, not under `api/`, so the store layer importing Redactor from it
-    # does not reach into the API layer.
+    # One Redactor instance backs the persisted stores (AssetRepo.last_error,
+    # EventRepo.add) and the logging handler below, so credential text is
+    # scrubbed the same way wherever it might land -- and so a credential the
+    # wizard persists *after* this boot (via Redactor.add_secret) reaches both
+    # at once rather than only whichever copy a route happened to update.
     redactor = Redactor([secret, api_key, auth_data])
+    configure_logging(env.get("IGP_LOG_LEVEL", "INFO"), redactor=redactor)
+
     assets = AssetRepo(conn, clock, redactor=redactor)
     albums = AlbumRepo(conn)
     cursors = CursorRepo(conn)
@@ -119,11 +115,19 @@ def build_services(data_dir: Path, env: Mapping[str, str] | None = None) -> tupl
 
     scratch = Path(env.get("IGP_SCRATCH_DIR") or Path(data_dir) / "scratch")
     allow_direct = env.get("IGP_ALLOW_DIRECT_READS", "true").lower() != "false"
-    resolver = ByteResolver(immich, scratch=scratch, allow_direct=allow_direct)
 
-    worker = Worker(assets, gphotos, resolver, settings.filters, settings.retry, clock)
-    runtime = Runtime(assets, worker, settings, clock, events)
-    backfill = BackfillJob(immich, assets, cursors, settings)
+    runtime, backfill, loops = build_runtime_graph(
+        immich=immich,
+        gphotos=gphotos,
+        settings=settings,
+        assets=assets,
+        albums=albums,
+        cursors=cursors,
+        events=events,
+        clock=clock,
+        scratch=scratch,
+        allow_direct=allow_direct,
+    )
 
     workflow_id = settings_repo.get(WORKFLOW_ID_KEY)
     services = Services(
@@ -138,25 +142,21 @@ def build_services(data_dir: Path, env: Mapping[str, str] | None = None) -> tupl
         backfill=backfill,
         wizard=Wizard(),
         immich=immich,
+        gphotos=gphotos,
         workflow_id=str(workflow_id) if workflow_id else None,
         clock=clock,
+        redactor=redactor,
+        scratch=scratch,
+        allow_direct=allow_direct,
     )
-    loops = BackgroundLoops(
-        runtime=runtime,
-        reconciler=Reconciler(immich, assets, cursors, settings, clock),
-        backfill=backfill,
-        album_mirror=AlbumMirror(immich, gphotos, albums, assets),
-        deletion_sweeper=DeletionSweeper(gphotos, assets, settings),
-        settings=settings,
-        clock=clock,
-        events=events,
-        assets=assets,
-    )
+    loops_handle = LoopsHandle(loops)
+    services.loops_handle = loops_handle
+
     # Recover anything a crash left claimed mid-upload. BackgroundLoops repeats
     # this periodically; this is only the boot-time pass, for a crash that
     # happened before this process ever ran the loop.
     assets.requeue_stale_uploading(older_than=STALE_UPLOAD_AGE)
-    return services, loops
+    return services, loops_handle
 
 
 def main() -> None:

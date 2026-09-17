@@ -123,3 +123,32 @@ class BackgroundLoops:
                 # looping.
                 logger.exception("background loop iteration failed")
             sleep(IDLE_SLEEP_SECONDS)
+
+
+class LoopsHandle:
+    """A mutable pointer to the currently active `BackgroundLoops`.
+
+    The background thread is started once, on this handle's `run_forever`,
+    for the life of the process. It never holds a `BackgroundLoops` directly;
+    it re-reads `self.current` on every pass. That is what lets a
+    configuration change (the wizard completing, or a settings PUT) swap in
+    a freshly built loop graph — new Immich/Google clients, new `Settings` —
+    via `replace()`, without restarting this thread or the process.
+
+    `BackgroundLoops.run_forever` already exists and is directly tested; this
+    class is a thin indirection in front of it; it does not replace it.
+    """
+
+    def __init__(self, loops: BackgroundLoops) -> None:
+        self.current = loops
+
+    def replace(self, loops: BackgroundLoops) -> None:
+        self.current = loops
+
+    def run_forever(self, stop: threading.Event, sleep=time.sleep) -> None:  # noqa: ANN001
+        while not stop.is_set():
+            try:
+                self.current.iterate()
+            except Exception:  # noqa: BLE001 - one bad pass must not kill the loop
+                logger.exception("background loop iteration failed")
+            sleep(IDLE_SLEEP_SECONDS)

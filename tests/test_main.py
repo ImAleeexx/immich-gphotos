@@ -1,3 +1,5 @@
+import logging
+
 from fastapi.testclient import TestClient
 
 from immich_gphotos.api.app import create_app
@@ -13,6 +15,22 @@ def test_build_services_wires_a_working_app(tmp_path):
     assert client.get("/healthz").json()["status"] == "ok"
     assert services.webhook_secret
     assert loops is not None
+
+
+def test_a_credential_added_after_boot_is_scrubbed_from_both_events_and_logs(tmp_path):
+    """The wizard persists a credential (e.g. the Immich API key) well after
+    build_services ran and the log handler/Redactor were constructed. Both
+    must share one Redactor instance and grow together via add_secret, or a
+    credential entered through the wizard would never be scrubbed for the
+    rest of the process's life."""
+    services, _ = build_services(tmp_path, env={})
+
+    handler = logging.getLogger().handlers[0]
+    assert handler.formatter._redactor is services.redactor
+
+    services.redactor.add_secret("brand-new-secret")
+    services.events.add("info", "token was brand-new-secret")
+    assert "brand-new-secret" not in services.events.recent(1)[0]["message"]
 
 
 def test_the_webhook_secret_survives_a_restart(tmp_path):
