@@ -78,7 +78,12 @@ class Wizard:
 
         workflow_permissions_present = not (WORKFLOW_PERMISSIONS - granted)
         event_driven = supports_workflows and webhook_present and workflow_permissions_present
-        if not supports_workflows:
+        # missing is checked first: a broken API key is the more actionable,
+        # more specific problem, and naming it must never be preempted by the
+        # (also true, but secondary) fact that this server predates workflows.
+        if missing:
+            message = "The API key is missing required permissions."
+        elif not supports_workflows:
             message = (
                 f"Immich {version[0]}.{version[1]} has no workflow system; running in reconciler-only mode."
             )
@@ -86,8 +91,6 @@ class Wizard:
             message = (
                 "This server does not expose immich-plugin-core#webhook; running in reconciler-only mode."
             )
-        elif missing:
-            message = "The API key is missing required permissions."
         else:
             message = "Connected."
 

@@ -21,6 +21,20 @@ def test_missing_permissions_are_named_not_just_counted():
     assert check.missing_permissions == {"asset.download", "workflow.create"}
 
 
+def test_missing_permissions_are_reported_before_reconciler_only_mode():
+    """A pre-3.0 server (no workflow system) with a key that is *also* missing
+    a core permission must be told which permission is missing, not that it's
+    running in reconciler-only mode -- that would bury the actionable,
+    specific problem behind a fact that's true but beside the point."""
+    granted = set(CORE_PERMISSIONS) - {"asset.download"}
+    client = FakeImmichClient(permissions=granted, version=(2, 9, 0))
+    check = Wizard().check_immich(client)
+    assert check.ok is False
+    assert check.missing_permissions == {"asset.download"}
+    assert "missing" in check.message.lower()
+    assert "reconcil" not in check.message.lower()
+
+
 def test_immich_below_v3_degrades_to_reconciler_only_instead_of_failing():
     # A pre-3.0 server has no workflow system, so a key on it can only ever
     # carry the core permissions -- the workflow.* / plugin.read scopes don't
