@@ -3,11 +3,12 @@ import pytest
 from immich_gphotos.clock import FakeClock
 from immich_gphotos.config import Settings
 from immich_gphotos.immich.fake import FakeImmichClient
-from immich_gphotos.models import Asset, Priority
+from immich_gphotos.immich.protocol import AssetPage
+from immich_gphotos.models import Asset, Outcome, Priority
 from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.store.db import connect
 from immich_gphotos.store.kv import CursorRepo
-from immich_gphotos.sync.backfill import BACKFILL_CURSOR, BackfillJob
+from immich_gphotos.sync.backfill import BACKFILL_CURSOR, BackfillJob, StalledPaginationError
 
 
 def asset(i: str) -> Asset:
@@ -36,8 +37,10 @@ def rig(tmp_path):
 
 def test_backfill_does_nothing_until_started(rig):
     job, _, _ = rig
+    immich = job._immich
     assert job.is_running() is False
     assert job.run_slice().scanned == 0
+    assert immich.searches == []
 
 
 def test_a_slice_walks_one_page_and_remembers_the_next(rig):
@@ -73,3 +76,42 @@ def test_reset_clears_progress(rig):
     job.reset()
     assert cursors.get(BACKFILL_CURSOR) is None
     assert job.is_running() is False
+
+
+def test_enqueued_excludes_assets_already_synced(rig):
+    """The reconciler suite pins `enqueued` in four places; the backfill's own
+    enqueue counting — driven by `upsert_pending`'s boolean return — needs the
+    same coverage, or a regression that recounts terminal rows goes unnoticed."""
+    job, assets, _ = rig
+    for i in range(5):
+        assets.upsert_pending(asset(str(i)), Priority.WEBHOOK)
+    assets.claim_next(limit=5)
+    for i in range(5):
+        assets.mark_synced(str(i), f"key-{i}", Outcome.UPLOADED)
+
+    job.start()
+    progress = job.run_slice(pages=99)
+    assert progress.scanned == 5
+    assert progress.enqueued < progress.scanned
+    assert progress.enqueued == 0
+
+
+def test_pagination_that_does_not_advance_raises_instead_of_looping_forever(tmp_path):
+    """A server bug or retried response repeating a page number must not spin
+    a slice forever — it must fail loudly rather than re-walking one page."""
+    clock = FakeClock()
+    conn = connect(tmp_path / "t.db")
+
+    class Stuck(FakeImmichClient):
+        def search_assets(self, **kwargs):
+            page = kwargs.get("page", 1)
+            return AssetPage(assets=[asset("0")], next_page=page)
+
+    immich = Stuck(assets=[asset("0")])
+    cursors = CursorRepo(conn)
+    job = BackfillJob(immich, AssetRepo(conn, clock), cursors, Settings(reconcile_page_size=2))
+    job.start()
+
+    with pytest.raises(StalledPaginationError):
+        job.run_slice(pages=1)
+    assert cursors.get(BACKFILL_CURSOR) == "1"

@@ -9,6 +9,14 @@ from immich_gphotos.store.kv import CursorRepo
 BACKFILL_CURSOR = "backfill"
 
 
+class StalledPaginationError(Exception):
+    """Raised when Immich returns a next_page that fails to advance.
+
+    A repeated or regressed page number would otherwise make a slice re-walk the
+    same page forever instead of making progress through the library.
+    """
+
+
 @dataclass(frozen=True)
 class BackfillProgress:
     page: int = 0
@@ -54,6 +62,7 @@ class BackfillJob:
         scanned = enqueued = 0
 
         for _ in range(pages):
+            requested_page = page
             result = self._immich.search_assets(
                 updated_after=None, page=page, size=self._settings.reconcile_page_size
             )
@@ -65,6 +74,11 @@ class BackfillJob:
                 self._cursors.delete(BACKFILL_CURSOR)
                 return BackfillProgress(page=page, scanned=scanned, enqueued=enqueued, done=True)
             page = result.next_page
+            if page <= requested_page:
+                raise StalledPaginationError(
+                    f"backfill pagination did not advance: page {requested_page} was"
+                    f" followed by next_page {page}"
+                )
 
         self._cursors.set(BACKFILL_CURSOR, str(page))
         return BackfillProgress(page=page, scanned=scanned, enqueued=enqueued, done=False)
