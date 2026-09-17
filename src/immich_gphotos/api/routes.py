@@ -109,6 +109,13 @@ def status_snapshot(services: Services) -> dict[str, Any]:
         "paused_reason": getattr(services.runtime, "paused_reason", None),
         "backfill": {"running": backfill_page is not None, "page": backfill_page},
         "window_open": transfer_allowed(services.clock.now(), services.settings.window),
+        # Whether the fast, no-copy read path is enabled at all
+        # (`IGP_ALLOW_DIRECT_READS`) -- not a live per-asset signal. Whether
+        # any given asset actually takes that path still depends on the
+        # mounted `originalPath` being readable at the moment it is synced
+        # (see `ByteResolver.resolve`), which this does not attempt to
+        # predict.
+        "direct_reads_enabled": services.allow_direct,
     }
 
 

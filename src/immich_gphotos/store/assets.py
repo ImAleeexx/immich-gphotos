@@ -225,13 +225,6 @@ class AssetRepo:
             ).fetchone()
         return row["media_key"] if row else None
 
-    def synced_ids(self) -> set[str]:
-        with self._conn.lock:
-            rows = self._conn.execute(
-                "SELECT immich_id FROM asset WHERE state = ?", (AssetState.SYNCED.value,)
-            ).fetchall()
-        return {r["immich_id"] for r in rows}
-
     def synced_count(self) -> int:
         with self._conn.lock:
             row = self._conn.execute(

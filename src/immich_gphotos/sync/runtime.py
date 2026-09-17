@@ -58,10 +58,13 @@ class Runtime:
         self._immich = immich
         self._paused_reason: str | None = None
         # Lazy: only ever created if a wave with more than one asset actually
-        # needs it (see _run_wave). worker_threads == 1 -- the common/default
-        # case for anyone who hasn't opted in to a pool -- never creates this,
-        # so it adds no thread and behaves byte-for-byte like the old
-        # sequential loop. Persisted across ticks (not rebuilt each tick) so
+        # needs it (see _run_wave). worker_threads == 1 never creates this --
+        # but that is not the default: Settings.worker_threads defaults to 2
+        # and the wizard ships the same value, so a fresh install runs the
+        # pool from the first tick that claims more than one asset. Only a
+        # settings change (or a hand-edited database row) that lowers
+        # worker_threads to 1 avoids creating this. Persisted across ticks
+        # (not rebuilt each tick) so
         # each worker thread's lazily-constructed gpmc client (threading.local
         # in GpmcClient) is actually reused rather than rebuilt every tick.
         self._pool: ThreadPoolExecutor | None = None
@@ -158,7 +161,18 @@ class Runtime:
                     self._assets.requeue(stranded.asset.immich_id, self._clock.now())
                 reason = halted.error_class.value if halted.error_class else "unknown"
                 self.pause(reason)
-                return TickResult(processed=processed, halted=True)
+                # window_closed/deferred are populated the same way as the
+                # normal return below -- BackgroundLoops.iterate discards the
+                # TickResult today (via _safely), so nothing currently reads
+                # these on the halt path, but that is not a reason to hand
+                # back a value that quietly claims the window was open and
+                # nothing was deferred when a halt cut the tick short.
+                return TickResult(
+                    processed=processed,
+                    halted=True,
+                    window_closed=not window_open,
+                    deferred=deferred,
+                )
 
             index += len(wave)
 

@@ -42,7 +42,7 @@
       button.textContent = "Retry";
       button.dataset.id = f.immich_id;
       button.addEventListener("click", async () => {
-        await fetch(`/api/failures/${button.dataset.id}/retry`, { method: "POST" });
+        await fetch(`/api/failures/${encodeURIComponent(button.dataset.id)}/retry`, { method: "POST" });
         load();
       });
       actionTd.appendChild(button);

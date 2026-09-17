@@ -168,7 +168,13 @@ def wizard_workflow(payload: WorkflowRequest, request: Request) -> dict:
             header=services.webhook_header,
         )
     except ImmichError as exc:
-        raise HTTPException(status_code=422, detail=f"workflow registration failed: {exc}") from exc
+        # `immich/client.py` only ever builds `ImmichError` messages from the
+        # method, path and status code -- never a header or body -- so there
+        # is nothing secret in `exc` today. Still route it through the same
+        # `Redactor` every other wizard error path uses, rather than being
+        # the one place that assumes that invariant holds forever.
+        message = services.redactor.scrub(str(exc)) if services.redactor is not None else str(exc)
+        raise HTTPException(status_code=422, detail=f"workflow registration failed: {message}") from exc
 
     services.settings_repo.set(WORKFLOW_ID_KEY, workflow_id)
     services.workflow_id = workflow_id

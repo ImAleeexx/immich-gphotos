@@ -76,6 +76,10 @@ def test_status_reports_counts_and_pause_state(rig):
     assert body["counts"]["pending"] == 1
     assert body["paused_reason"] is None
     assert body["window_open"] is True
+    # Finding 5: the dashboard's claim to show "whether the fast, direct-read
+    # path is active" needs a real field to render -- `Services.allow_direct`
+    # defaults to True (the `rig` fixture never overrides it).
+    assert body["direct_reads_enabled"] is True
 
 
 def test_failures_are_listed_with_their_error_class(rig):

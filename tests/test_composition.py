@@ -178,6 +178,86 @@ def test_rebuild_does_not_carry_a_pause_forward_when_there_was_none(tmp_path):
     assert services.loops_handle.current._paused_at is None
 
 
+def test_rebuild_closes_the_outgoing_immich_client_when_it_is_replaced(tmp_path):
+    """The small finding this guards: `HttpImmichClient.close()` existed but
+    nothing ever called it on a rebuild, leaking one httpx connection pool's
+    sockets on every wizard reconnect. With no worker pool ever created
+    (`worker_threads` defaults to 1 in this fixture's Settings()), there is no
+    background pool to drain first, so the close happens synchronously."""
+
+    class _ClosableFake(FakeImmichClient):
+        def __init__(self, *a, **k) -> None:
+            super().__init__(*a, **k)
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    services = build(tmp_path)
+    old_immich = _ClosableFake()
+    services.immich = old_immich
+    services.loops_handle.current._reconciler._immich = old_immich
+
+    new_immich = _ClosableFake(version=(3, 2, 2))
+    rebuild_runtime(services, immich=new_immich)
+
+    assert old_immich.closed is True
+    assert new_immich.closed is False
+
+
+def test_rebuild_does_not_close_the_immich_client_it_is_carrying_forward(tmp_path):
+    """The common case -- only settings changed -- must never close the
+    client still installed and in active use on the running service."""
+
+    class _ClosableFake(FakeImmichClient):
+        def __init__(self, *a, **k) -> None:
+            super().__init__(*a, **k)
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    services = build(tmp_path)
+    carried = _ClosableFake()
+    services.immich = carried
+    services.loops_handle.current._reconciler._immich = carried
+
+    rebuild_runtime(services, settings=Settings(quality="saver"))
+
+    assert carried.closed is False
+    assert services.immich is carried
+
+
+def test_rebuild_closes_the_outgoing_immich_client_after_its_pool_drains(tmp_path):
+    """When the outgoing Runtime did create a worker pool (worker_threads >
+    1), the Immich client close is deferred to a background thread that
+    waits for that pool to finish draining first, rather than closing out
+    from under whatever the pool's threads might still be doing."""
+    import time
+
+    class _ClosableFake(FakeImmichClient):
+        def __init__(self, *a, **k) -> None:
+            super().__init__(*a, **k)
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    services = build(tmp_path, settings=Settings(worker_threads=2))
+    old_immich = _ClosableFake()
+    services.immich = old_immich
+    services.loops_handle.current._reconciler._immich = old_immich
+    services.runtime._executor()  # force the pool into existence, as a real tick would
+
+    new_immich = _ClosableFake(version=(3, 2, 2))
+    rebuild_runtime(services, immich=new_immich)
+
+    deadline = time.monotonic() + 2.0
+    while not old_immich.closed and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert old_immich.closed is True
+
+
 def test_rebuild_closes_the_outgoing_runtimes_worker_pool(tmp_path):
     """A Runtime with worker_threads > 1 may own a lazily-created thread
     pool. Swapping in a new Runtime on a settings change must not leak that

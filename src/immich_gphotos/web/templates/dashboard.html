@@ -13,6 +13,10 @@
   <p id="backfill-status">-</p>
 </section>
 <section class="card">
+  <h2>Byte resolution</h2>
+  <p id="direct-reads-status">-</p>
+</section>
+<section class="card">
   <h2>Recent activity</h2>
   <ul id="activity"></ul>
 </section>
@@ -38,6 +42,10 @@
     document.getElementById("backfill-status").textContent = backfill.running
       ? "Running (resuming from page " + backfill.page + ")"
       : "Not running";
+
+    document.getElementById("direct-reads-status").textContent = data.direct_reads_enabled
+      ? "Enabled — readable originals skip the Immich API download."
+      : "Disabled — every original is downloaded through the Immich API.";
 
     const activity = document.getElementById("activity");
     const item = document.createElement("li");

@@ -18,7 +18,9 @@ changes here -- cursors and queued assets are untouched -- only the
 in-memory object graph.
 """
 
+import threading
 from pathlib import Path
+from typing import Any
 
 from immich_gphotos.clock import Clock
 from immich_gphotos.config import Settings
@@ -38,6 +40,55 @@ from immich_gphotos.sync.reconciler import Reconciler
 from immich_gphotos.sync.runtime import Runtime
 from immich_gphotos.sync.throttle import TokenBucket
 from immich_gphotos.sync.worker import Worker
+
+
+def _close_outgoing_immich_client(client: Any, pool: Any) -> None:
+    """Close an outgoing `HttpImmichClient` once nothing already dispatched
+    against it can still be running.
+
+    `HttpImmichClient.close()` tears down its `httpx.Client`'s connection
+    pool outright -- unlike `ThreadPoolExecutor.shutdown(wait=False)` (see
+    `Runtime.close`), which only refuses *new* submissions and lets whatever
+    is already running finish untouched, closing this out from under a
+    request that is genuinely in flight would break that request. The
+    outgoing Runtime's worker pool (if `worker_threads > 1` ever created one)
+    is exactly where such an in-flight request would be: `Runtime.close()`,
+    called just above this, asked that pool to stop accepting new
+    submissions but deliberately did not wait for what it had already
+    accepted -- those threads may still be calling into this same client
+    (a download via the resolver, or an album-allowlist lookup) when we get
+    here.
+
+    So the close itself happens on a short-lived background thread that
+    waits for that pool to fully drain first: `shutdown(wait=True)` after
+    `close()`'s own `wait=False` shutdown does not shut down twice, it just
+    blocks until the same drain completes. When there never was a pool
+    (`worker_threads == 1`, the default -- every asset runs directly on the
+    calling thread), the only possible racer is a tick already executing on
+    the single long-lived background-loop thread at the exact moment of this
+    swap. That window is small, bounded by one tick's own claim size, and any
+    failure it causes surfaces as an ordinary classified, retried error --
+    the same tolerance this project already extends to the analogous
+    `executor.submit()` race in `Runtime._run_wave` -- so the client is
+    closed immediately in that case rather than inventing a new lock for it.
+
+    Not closing at all was the actual bug this exists to fix: every settings
+    save and every wizard reconnect otherwise leaked one httpx connection
+    pool's sockets for the life of the container.
+    """
+    close = getattr(client, "close", None)
+    if close is None:
+        return
+
+    def _close() -> None:
+        if pool is not None:
+            pool.shutdown(wait=True)
+        close()
+
+    if pool is not None:
+        threading.Thread(target=_close, name="igp-immich-client-close", daemon=True).start()
+    else:
+        _close()
 
 
 def build_runtime_graph(
@@ -99,6 +150,7 @@ def rebuild_runtime(
     gphotos = gphotos if gphotos is not None else services.gphotos
     settings = settings if settings is not None else services.settings
     old_runtime = services.runtime
+    old_immich = services.immich
 
     # GpmcClient bakes `quality` in at construction and `upload()` reads it
     # from `self`, not from `Settings` -- so carrying the *existing* gphotos
@@ -153,3 +205,20 @@ def rebuild_runtime(
     close = getattr(old_runtime, "close", None)
     if close is not None:
         close()
+
+    # Close the outgoing Immich client's connection pool too, but only when
+    # it is genuinely being replaced (the common "only settings changed"
+    # path carries the same client forward -- see the top of this function
+    # -- and must never close a client that is still installed and in active
+    # use). See `_close_outgoing_immich_client` for why this is deferred
+    # rather than done inline.
+    #
+    # GpmcClient needs no equivalent: gpmc's `Api` opens a fresh
+    # `requests.Session` per call, inside a `with` block that closes it again
+    # before the call returns (see `gpmc/api.py`) -- it never holds a
+    # long-lived session for this to leak. The only thing an outgoing
+    # `GpmcClient` keeps around is a `gpmc.Client` per thread (auth-token
+    # cache, no open socket), which is reclaimed by ordinary garbage
+    # collection once nothing references the outgoing `GpmcClient` any more.
+    if old_immich is not None and old_immich is not services.immich:
+        _close_outgoing_immich_client(old_immich, getattr(old_runtime, "_pool", None))

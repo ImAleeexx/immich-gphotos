@@ -25,11 +25,6 @@ class ByteResolver:
         self._scratch = Path(scratch)
         self._allow_direct = allow_direct
 
-    def direct_available(self, sample_path: str | None) -> bool:
-        if not self._allow_direct or not sample_path:
-            return False
-        return Path(sample_path).is_file()
-
     def resolve(self, asset: Asset) -> ResolvedBytes:
         if self._allow_direct and asset.original_path:
             candidate = Path(asset.original_path)
