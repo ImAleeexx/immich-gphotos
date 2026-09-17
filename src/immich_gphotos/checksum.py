@@ -31,7 +31,7 @@ def normalize_checksum(value: object) -> str:
                 raise ChecksumError(f"not valid hex: {value!r}") from exc
         try:
             return _encode(base64.b64decode(value, validate=True))
-        except (binascii.Error, ChecksumError) as exc:
+        except ValueError as exc:
             raise ChecksumError(f"not a valid checksum string: {value!r}") from exc
 
     if isinstance(value, dict) and value.get("type") == "Buffer":

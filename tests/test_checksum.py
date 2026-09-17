@@ -36,3 +36,8 @@ def test_wrong_length_is_rejected():
 def test_unknown_shape_is_rejected():
     with pytest.raises(ChecksumError):
         normalize_checksum({"nope": 1})
+
+
+def test_non_ascii_string_is_rejected():
+    with pytest.raises(ChecksumError):
+        normalize_checksum("ü" * 10)
