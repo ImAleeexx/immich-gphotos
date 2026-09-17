@@ -22,7 +22,7 @@ class FakeImmichClient:
         self.albums = albums or {}
         self.permissions = permissions or set()
         self.version = version
-        self.method_keys = method_keys or {"immich-plugin-core#webhook"}
+        self.method_keys = {"immich-plugin-core#webhook"} if method_keys is None else method_keys
         self.downloads: list[str] = []
         self.created_workflows: list[dict] = []
         self.searches: list[dict] = []
