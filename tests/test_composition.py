@@ -145,6 +145,39 @@ def test_rebuild_syncs_a_changed_quality_onto_the_carried_forward_gphotos_client
     assert services.gphotos.quality == "quota"
 
 
+def test_rebuild_preserves_an_active_halt_and_its_retry_cooldown(tmp_path):
+    """I6: a fresh Runtime starts with _paused_reason=None and a fresh
+    BackgroundLoops starts with _paused_at=None, so a settings save used to
+    silently clear an active AUTH_INVALID/QUOTA_EXHAUSTED halt -- dropping
+    the dashboard's banner and letting the loop resume hammering still-bad
+    credentials. A rebuild must carry the halt (and the pause timestamp that
+    drives PAUSE_RETRY_AFTER) across the swap."""
+    services = build(tmp_path)
+    services.runtime.pause("AUTH_INVALID")
+    services.loops_handle.current.iterate()  # sets _paused_at, as a real loop pass would
+    paused_at = services.loops_handle.current._paused_at
+    next_reconcile = services.loops_handle.current._next_reconcile
+    assert paused_at is not None
+
+    rebuild_runtime(services, settings=Settings(worker_threads=3))
+
+    assert services.runtime.paused_reason == "AUTH_INVALID"
+    assert services.loops_handle.current._paused_at == paused_at
+    # Not strictly required by the spec, but noted as clean to also carry:
+    # a rebuild should not force an unrelated full reconcile as a side effect.
+    assert services.loops_handle.current._next_reconcile == next_reconcile
+
+
+def test_rebuild_does_not_carry_a_pause_forward_when_there_was_none(tmp_path):
+    services = build(tmp_path)
+    assert services.runtime.paused_reason is None
+
+    rebuild_runtime(services, settings=Settings(worker_threads=3))
+
+    assert services.runtime.paused_reason is None
+    assert services.loops_handle.current._paused_at is None
+
+
 def test_rebuild_closes_the_outgoing_runtimes_worker_pool(tmp_path):
     """A Runtime with worker_threads > 1 may own a lazily-created thread
     pool. Swapping in a new Runtime on a settings change must not leak that

@@ -160,6 +160,28 @@ def test_omitting_the_bandwidth_field_leaves_an_existing_cap_unchanged(tmp_path)
     assert services.settings.bandwidth_bytes_per_second == 500_000
 
 
+def test_a_settings_save_while_halted_leaves_the_service_halted(tmp_path):
+    """I6: rebuild_runtime constructs a fresh Runtime/BackgroundLoops on every
+    settings save, which used to silently clear an active AUTH_INVALID/
+    QUOTA_EXHAUSTED halt -- dropping the dashboard's banner and resuming a
+    transfer against still-bad credentials. A settings save is not itself a
+    reason to resume."""
+    http, services, loops_handle = _rig(tmp_path)
+    services.runtime.pause("AUTH_INVALID")
+    # Advances BackgroundLoops' own pause bookkeeping the same way a real
+    # background-loop iteration would.
+    loops_handle.current.iterate()
+    assert loops_handle.current._paused_at is not None
+
+    response = http.put("/api/settings", json={"worker_threads": 5})
+
+    assert response.status_code == 200
+    assert services.settings.worker_threads == 5
+    assert services.runtime.paused_reason == "AUTH_INVALID"
+    assert http.get("/api/status").json()["paused_reason"] == "AUTH_INVALID"
+    assert loops_handle.current._paused_at is not None
+
+
 # --- Deletion propagation's typed confirmation (spec: "Off by default, ------
 # behind an explicit toggle with typed confirmation") -----------------------
 

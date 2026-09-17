@@ -122,6 +122,21 @@ def rebuild_runtime(
         allow_direct=services.allow_direct,
     )
 
+    # A fresh Runtime/BackgroundLoops otherwise starts unpaused, so any
+    # settings save would silently clear an active AUTH_INVALID/
+    # QUOTA_EXHAUSTED halt -- dropping the dashboard's banner and resuming a
+    # transfer that still has bad credentials. Carry the halt (and the pause
+    # timestamp that drives its retry cooldown) across the swap; a rebuild is
+    # not itself a reason to resume. `_next_reconcile` is carried too so a
+    # save doesn't also force an immediate full reconcile as a side effect.
+    old_loops = services.loops_handle.current if services.loops_handle is not None else None
+    paused_reason = getattr(old_runtime, "paused_reason", None)
+    if paused_reason is not None:
+        runtime._paused_reason = paused_reason
+    if old_loops is not None:
+        loops._paused_at = old_loops._paused_at
+        loops._next_reconcile = old_loops._next_reconcile
+
     services.immich = immich
     services.gphotos = gphotos
     services.settings = settings
