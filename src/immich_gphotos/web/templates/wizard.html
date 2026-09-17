@@ -1,9 +1,182 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Setup wizard</h1>
-<div class="card">
-  <p>Connect your Immich and Google Photos accounts to start mirroring your library.</p>
-  <p>Once connected, this dashboard tracks backfill progress, retries and any
-     assets that need attention.</p>
-</div>
+<p>Four steps. Each one proves the thing actually works before it's saved &mdash;
+   nothing here is accepted just because it was typed.</p>
+
+<section class="card">
+  <h2>1. Immich</h2>
+  <form id="immich-form">
+    <label>Server URL <input name="immich_url" placeholder="http://immich:2283" required></label>
+    <label>API key <input name="immich_api_key" type="password" required></label>
+    <button type="submit">Connect</button>
+  </form>
+  <p id="immich-status"></p>
+</section>
+
+<section class="card">
+  <h2>2. Google Photos</h2>
+  <p><code>auth_data</code> can only be extracted from an Android device &mdash; no
+     daemon can automate this part. The easiest way, no root required:</p>
+  <ol>
+    <li>Install <a href="https://github.com/ReVanced/GmsCore/releases">GmsCore</a> and a
+        <a href="https://github.com/j-hc/revanced-magisk-module/releases">patched Google Photos</a>
+        on the device, and connect it over ADB.</li>
+    <li>On your PC, watch the device log for the auth request:
+      <pre><code>adb logcat | grep "auth%2Fphotos.native"</code></pre>
+      (Windows: <code>adb logcat | FINDSTR "auth%2Fphotos.native"</code>)</li>
+    <li>If GmsCore already has an account signed in, remove it first, then open the
+        patched Google Photos app and sign in.</li>
+    <li>A matching log line appears in the terminal. Copy everything from
+        <code>androidId=</code> to the end of that line &mdash; that whole string is
+        <code>auth_data</code>.</li>
+  </ol>
+  <p>Rooted device instead? See
+     <a href="https://github.com/xob0t/gpmc#auth_data-where-do-i-get-mine">gpmc's HTTP Toolkit method</a>.</p>
+  <form id="google-form">
+    <label>auth_data <textarea name="google_auth_data" rows="3" required></textarea></label>
+    <button type="submit">Verify &amp; save</button>
+  </form>
+  <p id="google-status"></p>
+</section>
+
+<section class="card">
+  <h2>3. Workflow</h2>
+  <p id="workflow-mode">Connect Immich first to see which mode is available.</p>
+  <form id="workflow-form">
+    <label>Webhook URL (must be reachable <em>from</em> Immich)
+      <input name="webhook_url" id="webhook_url" required>
+    </label>
+    <button type="submit" id="workflow-submit" disabled>Register workflow</button>
+  </form>
+  <p id="workflow-status"></p>
+</section>
+
+<section class="card">
+  <h2>4. Options</h2>
+  <form id="options-form">
+    <label>Quality
+      <select name="quality">
+        <option value="original">Original</option>
+        <option value="saver">Storage saver</option>
+        <option value="quota">Quota-friendly</option>
+      </select>
+    </label>
+    <label><input type="checkbox" name="albums_enabled" checked> Sync albums</label>
+    <label><input type="checkbox" name="deletions_enabled"> Propagate deletions</label>
+    <label>Worker threads <input type="number" name="worker_threads" min="1" max="16" value="2"></label>
+    <label>Bandwidth (bytes/sec, blank = unlimited) <input type="number" name="bandwidth_bytes_per_second" min="0"></label>
+    <label><input type="checkbox" name="start_backfill" checked> Start backfilling existing assets now</label>
+    <button type="submit">Save &amp; finish</button>
+  </form>
+  <p id="options-status"></p>
+</section>
+
+<script>
+  async function submitJson(url, body) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = data.detail;
+      const message = (detail && detail.message) ? detail.message : (detail || "request failed");
+      const missing = (detail && detail.missing_permissions && detail.missing_permissions.length)
+        ? " Missing: " + detail.missing_permissions.join(", ")
+        : "";
+      throw new Error(message + missing);
+    }
+    return data;
+  }
+
+  function report(id, text, ok) {
+    const el = document.getElementById(id);
+    el.textContent = text;
+    el.style.color = ok ? "#3fb950" : "#f85149";
+  }
+
+  document.getElementById("webhook_url").value = location.origin + "/hooks/immich";
+
+  document.getElementById("immich-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    try {
+      const result = await submitJson("/api/wizard/immich", {
+        immich_url: form.immich_url.value,
+        immich_api_key: form.immich_api_key.value,
+      });
+      report("immich-status", result.message, true);
+      const eventDriven = result.mode === "event_driven";
+      document.getElementById("workflow-mode").textContent = eventDriven
+        ? "Event-driven mode is available for this server."
+        : "This server runs in reconciler-only mode (pre-3.0, or no webhook plugin); the reconciler covers it, no workflow needed.";
+      document.getElementById("workflow-submit").disabled = !eventDriven;
+      form.immich_api_key.value = "";
+    } catch (err) {
+      report("immich-status", err.message, false);
+    }
+  });
+
+  document.getElementById("google-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    try {
+      const result = await submitJson("/api/wizard/google", { google_auth_data: form.google_auth_data.value });
+      report("google-status", result.message, true);
+      form.google_auth_data.value = "";
+    } catch (err) {
+      report("google-status", err.message, false);
+    }
+  });
+
+  document.getElementById("workflow-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const result = await submitJson("/api/wizard/workflow", { webhook_url: event.target.webhook_url.value });
+      report("workflow-status", "Workflow registered (id " + result.workflow_id + ").", true);
+    } catch (err) {
+      report("workflow-status", err.message, false);
+    }
+  });
+
+  document.getElementById("options-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    try {
+      const result = await submitJson("/api/wizard/options", {
+        quality: form.quality.value,
+        albums_enabled: form.albums_enabled.checked,
+        deletions_enabled: form.deletions_enabled.checked,
+        worker_threads: Number(form.worker_threads.value),
+        bandwidth_bytes_per_second: form.bandwidth_bytes_per_second.value
+          ? Number(form.bandwidth_bytes_per_second.value)
+          : null,
+        start_backfill: form.start_backfill.checked,
+      });
+      report("options-status", result.backfill_started ? "Saved. Backfill started." : "Saved.", true);
+    } catch (err) {
+      report("options-status", err.message, false);
+    }
+  });
+
+  (async () => {
+    try {
+      const status = await (await fetch("/api/wizard/status")).json();
+      if (status.immich_url) document.getElementById("immich-form").immich_url.value = status.immich_url;
+      if (status.mode) {
+        const eventDriven = status.mode === "event_driven";
+        document.getElementById("workflow-mode").textContent = eventDriven
+          ? "Event-driven mode is available for this server."
+          : "This server runs in reconciler-only mode; the reconciler covers it, no workflow needed.";
+        document.getElementById("workflow-submit").disabled = !eventDriven;
+      }
+      if (status.workflow_id) report("workflow-status", "Already registered (id " + status.workflow_id + ").", true);
+      if (status.google_configured) report("google-status", "Already connected.", true);
+    } catch (err) {
+      /* status is a convenience prefill; a failure here must not block the forms */
+    }
+  })();
+</script>
 {% endblock %}
