@@ -9,8 +9,8 @@ import pytest
 @pytest.mark.parametrize("path", ["/", "/failures", "/settings", "/diagnostics", "/wizard"])
 def test_every_page_links_the_stylesheet_and_favicon(http, path):
     body = http.get(path).text
-    assert '/static/app.css' in body
-    assert '/static/favicon.svg' in body
+    assert "/static/app.css" in body
+    assert "/static/favicon.svg" in body
 
 
 @pytest.mark.parametrize(

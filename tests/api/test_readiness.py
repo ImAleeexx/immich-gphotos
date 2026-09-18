@@ -74,9 +74,7 @@ def test_a_paused_transfer_is_attention_and_names_the_reason(configured_services
     assert check.action_href == "/diagnostics"
 
 
-def test_failed_assets_are_attention_and_link_to_the_failures_page(
-    configured_services, asset_factory
-):
+def test_failed_assets_are_attention_and_link_to_the_failures_page(configured_services, asset_factory):
     from immich_gphotos.models import ErrorClass
 
     configured_services.assets.upsert_pending(asset_factory("a"), Priority.WEBHOOK)
