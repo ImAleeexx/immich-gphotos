@@ -140,3 +140,30 @@ def test_reduced_motion_block_is_last_in_app_css():
         "last rule in app.css so it always wins; found more CSS after it: "
         f"{trailing_without_comments.strip()[:200]!r}"
     )
+
+
+def test_a_hover_color_rule_excludes_btn_anchors():
+    """`a:hover` must never be an unscoped selector on its own.
+
+    `a.btn` strips the underline from anchor-buttons, but no `.btn:hover`
+    (or `a.btn:hover`) colour rule exists. An unscoped `a:hover { color:
+    ... }` rule has specificity (0,1,1), which beats `.btn--primary` /
+    `.btn--ghost` at (0,1,0), so it silently recolours button labels on
+    hover -- on `.btn--primary` this drops contrast to roughly 1.2:1,
+    making the label disappear under the cursor. `a:not(.btn):hover` keeps
+    the same specificity while excluding button anchors, so it's the
+    required form.
+    """
+    css = APP_CSS.read_text()
+    css_without_comments = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+
+    offending = []
+    for selector_text, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css_without_comments):
+        for selector in (s.strip() for s in selector_text.split(",")):
+            if selector == "a:hover":
+                offending.append(body.strip())
+
+    assert not offending, (
+        "found an unscoped `a:hover` rule that would apply to `.btn` "
+        f"anchors too; use `a:not(.btn):hover` instead: {offending}"
+    )

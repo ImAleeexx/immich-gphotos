@@ -195,7 +195,7 @@ a {
   color: var(--accent);
 }
 
-a:hover {
+a:not(.btn):hover {
   color: var(--accent-strong);
 }
 
