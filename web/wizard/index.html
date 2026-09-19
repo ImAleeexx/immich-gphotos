@@ -205,6 +205,16 @@
       </div>
       <p class="sub" style="margin-top:10px">Paste this into the immich-gphotos wizard. Treat it like a
          password — it can't be rotated easily, so don't paste it into a GitHub issue.</p>
+
+      <div class="note" style="margin-top:18px">
+        <b>Tidy up?</b> GmsCore and the patched Google Photos have done their job — the credential
+        keeps working without them. Your normal Google Photos is a different app and is not touched.
+        <div class="row">
+          <button class="sec" id="bRemove">Remove the two apps</button>
+          <span class="st" id="rmSt"></span>
+        </div>
+      </div>
+      <div class="err" id="rmErr"></div>
     </div>
   </div>
 
@@ -499,6 +509,44 @@ $('bOpenGms').onclick=()=>launch(PKG_GMS,'GmsCore');
 $('bOpenPhotos').onclick=()=>launch(PKG_PHOTOS,'Google Photos');
 
 /* ---------------- step 7 ---------------- */
+let rmArmed=false;
+async function uninstall(pkg,label){
+  if(!await isInstalled(pkg)){ log(label+': not installed, skipping'); return true; }
+  const out=await sh(`pm uninstall ${pkg}`);
+  const ok=/Success/i.test(out);
+  log(`${label}: ${out.trim()||'(no output)'}`, ok?'ok':'bad');
+  return ok;
+}
+$('bRemove').onclick=async()=>{
+  clearErr('rmErr');
+  const b=$('bRemove'), st=$('rmSt');
+  if(!rmArmed){                       // destructive, so make it a deliberate second click
+    rmArmed=true;
+    b.textContent='Confirm — remove both apps';
+    st.textContent='click again to confirm';
+    setTimeout(()=>{ if(rmArmed){ rmArmed=false;
+      b.textContent='Remove the two apps'; st.textContent=''; } },6000);
+    return;
+  }
+  rmArmed=false; b.disabled=true; b.textContent='Removing…'; st.textContent='';
+  try{
+    if(!adb) throw new Error('device is no longer connected');
+    const a=await uninstall(PKG_PHOTOS,'Google Photos (patched)');
+    const c=await uninstall(PKG_GMS,'GmsCore');
+    if(a&&c){ st.innerHTML='<span class="ok">both removed</span>'; b.textContent='Removed'; }
+    else{
+      st.innerHTML='<span class="bad">partly failed</span>';
+      b.disabled=false; b.textContent='Try again';
+      err('rmErr','<b>One of the apps wouldn\'t uninstall.</b> See the log below. You can always '+
+          'remove it on the phone: long-press the icon → App info → Uninstall.');
+    }
+  }catch(e){
+    st.innerHTML='<span class="bad">failed</span>'; b.disabled=false; b.textContent='Try again';
+    err('rmErr','<b>'+e.message+'</b>');
+    log('uninstall: '+e,'bad');
+  }
+};
+
 $('bCopy').onclick=async()=>{
   await navigator.clipboard.writeText($('token').textContent);
   log('copied to clipboard','ok');
