@@ -2,7 +2,7 @@
 
 # immich-gphotos
 
-**Keep a second copy of your Immich library in Google Photos — automatically, and without re-uploading what's already there.**
+**Keep a second copy of your Immich library in Google Photos — automatically, free unlimited storage, original quality and without re-uploading what's already there.**
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
