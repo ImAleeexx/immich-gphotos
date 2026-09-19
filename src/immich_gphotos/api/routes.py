@@ -7,24 +7,23 @@ from pydantic import BaseModel, Field
 from immich_gphotos.composition import rebuild_runtime
 from immich_gphotos.config import Quality
 from immich_gphotos.services import Services
+from immich_gphotos.storage_keys import (
+    MAX_WORKER_THREADS,
+    MIN_BANDWIDTH_BYTES_PER_SECOND,
+    MIN_WORKER_THREADS,
+)
 from immich_gphotos.storage_keys import SETTINGS_KEY as SETTING_KEY
 from immich_gphotos.sync.backfill import BACKFILL_CURSOR
 from immich_gphotos.sync.throttle import transfer_allowed
 
 router = APIRouter(prefix="/api")
 
-# Shared with main._merged_settings, which validates a stored settings row
-# against these same bounds so a hand-edited database row cannot apply a
-# worker_threads value the API itself would reject.
-MIN_WORKER_THREADS = 1
-MAX_WORKER_THREADS = 16
-
-# 0 passes `ge=0` and looks like a reasonable way to type "no cap" (the UI's
-# own "blank = unlimited" hint invites exactly that), but TokenBucket must
-# reject or ignore a non-positive rate rather than run with one -- so it can
-# never be a valid *cap* in the first place. blank/omitted (None) is still
-# how "unlimited" is actually spelled; also shared with
-# main._merged_settings, for the same reason MIN_WORKER_THREADS is.
+# MIN_WORKER_THREADS, MAX_WORKER_THREADS and MIN_BANDWIDTH_BYTES_PER_SECOND
+# now live in storage_keys (shared with accounts.build._merged_settings,
+# which validates a stored settings row against these same bounds so a
+# hand-edited database row cannot apply a value the API itself would
+# reject) and are re-exported here so existing importers of this module
+# keep working untouched.
 #
 # Bounded well above 1: Worker._throttle_upload now sleeps the *full* wait
 # TokenBucket hands back rather than silently truncating it, so the
@@ -36,7 +35,6 @@ MAX_WORKER_THREADS = 16
 # below what any real, deliberately-throttled connection is likely to be
 # capped at, so a value at or below it is far more likely a typo or a
 # misunderstanding of the field than an intentional rate.
-MIN_BANDWIDTH_BYTES_PER_SECOND = 65536
 
 # Spec: deletion propagation is "off by default, behind an explicit toggle
 # with typed confirmation" -- this is the only setting in the project that

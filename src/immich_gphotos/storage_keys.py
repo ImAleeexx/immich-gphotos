@@ -31,3 +31,21 @@ GLOBAL_SETTING_KEYS = frozenset({"bandwidth_bytes_per_second", "worker_threads"}
 # a workflow registered in Immich against that bare path, and repointing or
 # dropping it stops that person's backups with nothing in the UI to show it.
 LEGACY_WEBHOOK_ACCOUNT_KEY = "legacy_webhook_account"
+
+# Bounds shared between the API's `SettingsPatch` validation
+# (`api.routes`) and `accounts.build._merged_settings`, which validates a
+# stored settings row against these same bounds so a hand-edited database
+# row can never apply a value the API itself would reject. Defined here
+# rather than in `api.routes`, for the same reason `PASSWORD_KEY` is: the
+# `accounts` package runs on the boot path and must never import the API
+# package, which would drag FastAPI in through it. `api.routes` re-exports
+# all three for its existing importers.
+MIN_WORKER_THREADS = 1
+MAX_WORKER_THREADS = 16
+
+# 0 passes `ge=0` and looks like a reasonable way to type "no cap" (the UI's
+# own "blank = unlimited" hint invites exactly that), but TokenBucket must
+# reject or ignore a non-positive rate rather than run with one -- so it can
+# never be a valid *cap* in the first place. blank/omitted (None) is still
+# how "unlimited" is actually spelled.
+MIN_BANDWIDTH_BYTES_PER_SECOND = 65536
