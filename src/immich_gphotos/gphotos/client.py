@@ -2,6 +2,7 @@ import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl
 
 # gpmc.client runs `signal.signal(signal.SIGINT, signal.SIG_DFL)` at module
 # import time (to make Ctrl+C cancel its internal threads). signal.signal
@@ -51,6 +52,40 @@ def _is_signal_thread_error(exc: BaseException) -> bool:
     never be classified or force-promoted as AUTH_INVALID.
     """
     return isinstance(exc, ValueError) and "signal" in str(exc).lower() and "thread" in str(exc).lower()
+
+
+# gpmc's `_get_auth_token` indexes these straight out of the parsed auth_data,
+# so a capture that omits one dies with a bare KeyError. These three carry no
+# device-specific information -- a foreground flag and the locale Google should
+# answer in -- so supplying them is strictly better than sending the user back
+# to their phone for a credential that was never wrong. Everything else gpmc
+# needs (androidId, Email, Token, the signing keys, the SDK and services
+# versions) genuinely describes the device and cannot be invented here.
+_AUTH_DATA_DEFAULTS = (
+    ("oauth2_foreground", "1"),
+    ("lang", "en_US"),
+    ("device_country", "us"),
+)
+
+
+def normalize_auth_data(raw: str) -> str:
+    """Add the fields gpmc requires but a logcat capture may not carry.
+
+    Appends rather than re-serialising: `Token` and `service` arrive already
+    percent-encoded, and a round trip through `urlencode` would escape their
+    `%` again and hand Google a different credential than the phone emitted.
+    """
+    auth_data = raw.strip()
+    present = {k for k, _ in parse_qsl(auth_data, keep_blank_values=True)}
+    missing = [f"{k}={v}" for k, v in _AUTH_DATA_DEFAULTS if k not in present]
+    return "&".join([auth_data, *missing]) if missing else auth_data
+
+
+def missing_auth_field(exc: BaseException) -> str | None:
+    """The auth_data field gpmc could not find, if that is what went wrong."""
+    if isinstance(exc, KeyError) and exc.args and isinstance(exc.args[0], str):
+        return exc.args[0]
+    return None
 
 
 def classify_gpmc_error(exc: BaseException) -> ErrorClass:
@@ -129,7 +164,9 @@ class GpmcClient:
         if existing is None:
             # gpmc itself is imported eagerly at module scope (see top of
             # file); this only constructs a new instance for this thread.
-            existing = gpmc.Client(auth_data=self._auth_data, timeout=self._timeout, log_level="WARNING")
+            existing = gpmc.Client(
+                auth_data=normalize_auth_data(self._auth_data), timeout=self._timeout, log_level="WARNING"
+            )
             self._local.client = existing
         return existing
 
@@ -171,7 +208,13 @@ class GpmcClient:
             error_class = classify_gpmc_error(exc)
             if error_class is ErrorClass.UNKNOWN and not _is_signal_thread_error(exc):
                 error_class = ErrorClass.AUTH_INVALID
-            raise GPhotosError(f"authentication failed: {exc}", error_class) from exc
+            field = missing_auth_field(exc)
+            detail = (
+                f"auth_data is missing the field {field!r} that gpmc needs to build its auth request"
+                if field
+                else str(exc)
+            )
+            raise GPhotosError(f"authentication failed: {detail}", error_class) from exc
 
         try:
             return fn(client)
