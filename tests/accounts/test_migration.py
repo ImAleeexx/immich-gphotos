@@ -2,8 +2,10 @@ from pathlib import Path
 
 import pytest
 
+from immich_gphotos.accounts import migrate
 from immich_gphotos.accounts.control import CONTROL_DB_NAME, AccountRepo, connect_control
 from immich_gphotos.accounts.migrate import (
+    ACCOUNTS_DIRNAME,
     LEGACY_DB_NAME,
     account_dir,
     ensure_control_db,
@@ -117,6 +119,64 @@ def test_a_crash_before_the_rename_does_not_lose_the_bandwidth_cap(tmp_path, mon
     assert control.get(SETTINGS_KEY) == {"bandwidth_bytes_per_second": 1048576}
     account = SettingRepo(connect(account_dir(tmp_path, account_id) / LEGACY_DB_NAME))
     assert account.get(SETTINGS_KEY) == {"quality": "saver"}
+
+
+class _SpyConnection:
+    """Wraps a real connection and records whether `close()` was called,
+    without changing how it behaves for everything else (`SettingRepo` reads
+    `.lock` and runs queries straight through the wrapped connection)."""
+
+    def __init__(self, real):
+        self._real = real
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+        self._real.close()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_the_account_connection_is_closed_even_when_the_rename_fails(tmp_path, monkeypatch):
+    """Regression test: the R8 fix kept the account connection open across
+    the rename so the settings write could happen after it, which means the
+    rename raising must not skip closing it. Pin that by spying on the
+    connection `ensure_control_db` opens for the account database and
+    checking `close()` actually ran once the simulated rename failure has
+    propagated out."""
+    _legacy_install(tmp_path)
+
+    spies: list[_SpyConnection] = []
+    real_connect = migrate.connect
+
+    def _spying_connect(path, *args, **kwargs):
+        conn = real_connect(path, *args, **kwargs)
+        # Only the account database connection is under test here -- the
+        # legacy checkpoint connection in _adopt_legacy_database closes
+        # itself immediately, well before the rename this test fails.
+        if ACCOUNTS_DIRNAME in path.parts:
+            spy = _SpyConnection(conn)
+            spies.append(spy)
+            return spy
+        return conn
+
+    monkeypatch.setattr(migrate, "connect", _spying_connect)
+
+    real_replace = Path.replace
+
+    def _boom(self, target):
+        if self.name == f"{CONTROL_DB_NAME}.tmp":
+            raise OSError("simulated crash during the control-db rename")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", _boom, raising=True)
+
+    with pytest.raises(OSError):
+        ensure_control_db(tmp_path, now=NOW)
+
+    assert len(spies) == 1
+    assert spies[0].closed is True
 
 
 def test_the_wal_sidecars_travel_with_the_database(tmp_path):

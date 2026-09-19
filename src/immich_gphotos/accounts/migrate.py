@@ -15,6 +15,7 @@ global keys out of its settings row) happens after the rename, once there is
 a durable control.db to hold them; see the comment at that call.
 """
 
+import contextlib
 import shutil
 from pathlib import Path
 
@@ -100,37 +101,43 @@ def ensure_control_db(data_dir: Path, *, now: str) -> str | None:
             created_at=now,
         )
 
-    account_conn = connect(account_dir(data_dir, primary) / LEGACY_DB_NAME)
-    account = SettingRepo(account_conn)
-    for key in _CARRIED_TO_CONTROL:
-        value = account.get(key)
-        if value is not None:
-            control.set(key, value)
+    # `closing()` guarantees the account connection is released even if the
+    # rename below raises -- the exact failure this function exists to
+    # survive. A bare `account_conn.close()` after the rename would leak the
+    # connection (and, since `store.db.connect` opens the file in WAL mode,
+    # leave its `-wal`/`-shm` sidecars open) on that path.
+    with contextlib.closing(connect(account_dir(data_dir, primary) / LEGACY_DB_NAME)) as account_conn:
+        account = SettingRepo(account_conn)
+        for key in _CARRIED_TO_CONTROL:
+            value = account.get(key)
+            if value is not None:
+                control.set(key, value)
 
-    stored = account.get(SETTINGS_KEY)
-    account_settings = None
-    if isinstance(stored, dict):
-        control.set(SETTINGS_KEY, {k: v for k, v in stored.items() if k in GLOBAL_SETTING_KEYS})
-        account_settings = {k: v for k, v in stored.items() if k not in GLOBAL_SETTING_KEYS}
+        stored = account.get(SETTINGS_KEY)
+        account_settings = None
+        if isinstance(stored, dict):
+            control.set(SETTINGS_KEY, {k: v for k, v in stored.items() if k in GLOBAL_SETTING_KEYS})
+            account_settings = {k: v for k, v in stored.items() if k not in GLOBAL_SETTING_KEYS}
 
-    control.set(LEGACY_WEBHOOK_ACCOUNT_KEY, primary)
-    control_conn.close()
-    # The commit point. Everything above is replayable; this is not.
-    tmp.replace(data_dir / CONTROL_DB_NAME)
+        control.set(LEGACY_WEBHOOK_ACCOUNT_KEY, primary)
+        control_conn.close()
+        # The commit point. Everything above is replayable; this is not.
+        tmp.replace(data_dir / CONTROL_DB_NAME)
 
-    # The one write this migration makes to the account database, and it is
-    # deliberately on the far side of the commit point above. `connect()`
-    # runs in autocommit mode, so writing this before the rename would land
-    # on disk immediately -- and if the process then crashed before the
-    # rename, the next boot's replay would read an account settings row that
-    # had *already* lost bandwidth_bytes_per_second/worker_threads, with no
-    # control.db anywhere holding a copy of them. Gone for good, while
-    # everything else about the migration (account id, password, session)
-    # still recovers cleanly. Doing it here instead means that same crash
-    # just leaves the global keys duplicated in the account row once
-    # control.db already exists -- harmless, because whatever later reads
-    # settings for use always prefers the control copy over the account's.
-    if account_settings is not None:
-        account.set(SETTINGS_KEY, account_settings)
-    account_conn.close()
+        # The one write this migration makes to the account database, and it
+        # is deliberately on the far side of the commit point above.
+        # `connect()` runs in autocommit mode, so writing this before the
+        # rename would land on disk immediately -- and if the process then
+        # crashed before the rename, the next boot's replay would read an
+        # account settings row that had *already* lost
+        # bandwidth_bytes_per_second/worker_threads, with no control.db
+        # anywhere holding a copy of them. Gone for good, while everything
+        # else about the migration (account id, password, session) still
+        # recovers cleanly. Doing it here instead means that same crash just
+        # leaves the global keys duplicated in the account row once
+        # control.db already exists -- harmless, because whatever later
+        # reads settings for use always prefers the control copy over the
+        # account's.
+        if account_settings is not None:
+            account.set(SETTINGS_KEY, account_settings)
     return primary
