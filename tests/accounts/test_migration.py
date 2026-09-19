@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import pytest
+
 from immich_gphotos.accounts.control import CONTROL_DB_NAME, AccountRepo, connect_control
 from immich_gphotos.accounts.migrate import (
     LEGACY_DB_NAME,
@@ -74,6 +78,45 @@ def test_a_crash_before_the_control_rename_replays(tmp_path):
     replayed = ensure_control_db(tmp_path, now=NOW)
     assert replayed == account_id
     assert [r.id for r in AccountRepo(connect_control(tmp_path / CONTROL_DB_NAME)).list()] == [account_id]
+
+
+def test_a_crash_before_the_rename_does_not_lose_the_bandwidth_cap(tmp_path, monkeypatch):
+    """Regression test for R8. Nothing may write the trimmed settings row to
+    the account database before control.db is durably in place: drive the
+    real code path by making the rename itself fail, and check the crash
+    left the account's global keys untouched rather than already stripped."""
+    _legacy_install(tmp_path)
+
+    real_replace = Path.replace
+
+    def _boom(self, target):
+        if self.name == f"{CONTROL_DB_NAME}.tmp":
+            raise OSError("simulated crash during the control-db rename")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", _boom, raising=True)
+    with pytest.raises(OSError):
+        ensure_control_db(tmp_path, now=NOW)
+
+    # The rename never happened, so exactly one account directory exists and
+    # no control.db does -- the same state `ensure_control_db` must adopt on
+    # the next boot.
+    assert not (tmp_path / CONTROL_DB_NAME).exists()
+    (account_id,) = [d.name for d in (tmp_path / "accounts").iterdir()]
+
+    # The bug this guards against: if the account's settings row had already
+    # been stripped of its global keys before the failed rename, they would
+    # be gone for good here.
+    account = SettingRepo(connect(account_dir(tmp_path, account_id) / LEGACY_DB_NAME))
+    assert account.get(SETTINGS_KEY) == {"quality": "saver", "bandwidth_bytes_per_second": 1048576}
+
+    monkeypatch.undo()
+    replayed = ensure_control_db(tmp_path, now=NOW)
+    assert replayed == account_id
+    control = SettingRepo(connect_control(tmp_path / CONTROL_DB_NAME))
+    assert control.get(SETTINGS_KEY) == {"bandwidth_bytes_per_second": 1048576}
+    account = SettingRepo(connect(account_dir(tmp_path, account_id) / LEGACY_DB_NAME))
+    assert account.get(SETTINGS_KEY) == {"quality": "saver"}
 
 
 def test_the_wal_sidecars_travel_with_the_database(tmp_path):

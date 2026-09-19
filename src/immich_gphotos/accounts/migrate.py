@@ -6,9 +6,13 @@ v2:  /data/control.db  +  /data/accounts/<id>/immich-gphotos.db
 The move happens first and the control database is renamed into place last,
 so the rename is the commit point: a crash anywhere earlier leaves an account
 directory with no control database, which the next boot adopts rather than
-orphans. The password, session and settings rows are COPIED, not moved out of
-the account database -- leaving the originals in place is what makes that
-replay possible. They become dead rows; nothing reads them again.
+orphans. Nothing writes to the account database before that point either --
+the password, session and settings rows are only READ until control.db exists,
+so a crash before the rename leaves the account database exactly as it was
+and the next boot's replay sees real data, not already-stripped leftovers.
+The one write the migration does make to the account database (trimming the
+global keys out of its settings row) happens after the rename, once there is
+a durable control.db to hold them; see the comment at that call.
 """
 
 import shutil
@@ -104,13 +108,29 @@ def ensure_control_db(data_dir: Path, *, now: str) -> str | None:
             control.set(key, value)
 
     stored = account.get(SETTINGS_KEY)
+    account_settings = None
     if isinstance(stored, dict):
         control.set(SETTINGS_KEY, {k: v for k, v in stored.items() if k in GLOBAL_SETTING_KEYS})
-        account.set(SETTINGS_KEY, {k: v for k, v in stored.items() if k not in GLOBAL_SETTING_KEYS})
-    account_conn.close()
+        account_settings = {k: v for k, v in stored.items() if k not in GLOBAL_SETTING_KEYS}
 
     control.set(LEGACY_WEBHOOK_ACCOUNT_KEY, primary)
     control_conn.close()
     # The commit point. Everything above is replayable; this is not.
     tmp.replace(data_dir / CONTROL_DB_NAME)
+
+    # The one write this migration makes to the account database, and it is
+    # deliberately on the far side of the commit point above. `connect()`
+    # runs in autocommit mode, so writing this before the rename would land
+    # on disk immediately -- and if the process then crashed before the
+    # rename, the next boot's replay would read an account settings row that
+    # had *already* lost bandwidth_bytes_per_second/worker_threads, with no
+    # control.db anywhere holding a copy of them. Gone for good, while
+    # everything else about the migration (account id, password, session)
+    # still recovers cleanly. Doing it here instead means that same crash
+    # just leaves the global keys duplicated in the account row once
+    # control.db already exists -- harmless, because whatever later reads
+    # settings for use always prefers the control copy over the account's.
+    if account_settings is not None:
+        account.set(SETTINGS_KEY, account_settings)
+    account_conn.close()
     return primary
