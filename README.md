@@ -31,7 +31,7 @@ It exists for one situation in particular: you've moved to Immich, you're happy 
 
 - **Immich 3.0 or newer** for the real-time path. Older versions still work — the wizard detects it and falls back to polling rather than refusing to set up.
 - **Docker**, and a little disk for the container and its database.
-- **An Android device** (or emulator) for a one-time credential extraction. This is the fiddly part, and it's unavoidable — see [Getting your Google credential](#getting-your-google-credential).
+- **An Android device** (or emulator) for a one-time credential extraction. This is the fiddly part, and it's unavoidable — but a [browser wizard](https://imaleeexx.github.io/immich-gphotos/) now does most of it over USB. It needs Chrome or Edge on a desktop; see [Getting your Google credential](#getting-your-google-credential).
 
 ## Quick start
 
@@ -90,21 +90,39 @@ Note there's no `asset.upload` in that list. This service never writes assets in
 
 There's no polite way around this one. Google offers no public API for uploading to your own library at original quality, so the credential has to come off an Android device. You only do it once.
 
-**Without root, using ReVanced:**
+### The browser wizard
 
-1. Install [GmsCore](https://github.com/ReVanced/GmsCore/releases) and a [patched Google Photos APK](https://github.com/j-hc/revanced-magisk-module/releases).
+**→ [Open the credential wizard](https://imaleeexx.github.io/immich-gphotos/)**
+
+It talks to your phone over USB, installs the two apps it needs, watches the device log and hands you the finished `auth_data` string. The credential never leaves the browser tab — the page has no backend, and the only things it contacts are `api.github.com` to look up download links and a CDN for the USB library.
+
+What you need:
+
+- **Chrome, Edge, or another Chromium browser, on a desktop.** It uses WebUSB, which Firefox and Safari do not implement. A phone browser can't do this.
+- **USB debugging** on the phone: Settings → About phone → tap *Build number* seven times, then Developer options → *USB debugging*. Use a cable that carries data.
+- **No `adb` server running.** Android Studio, VS Code and scrcpy each start one, and it takes exclusive ownership of the phone — the wizard then can't reach it. Close them first. If connecting still fails, run `adb kill-server`; and if that appears to do nothing, try `sudo pkill -f "adb -L tcp:5037"`, because a root-owned server is invisible to `adb kill-server` and produces a USB transfer error that looks like a cable fault.
+
+Two things worth knowing before you start. Play Protect **will** warn you when GmsCore installs — that app impersonates Google Play Services by design, which is precisely the pattern Play Protect flags; the wizard explains the dialog and how to get past it. And the patched Photos build installs under its own package name (`app.morphe.android.apps.photos`), so it sits alongside your normal Google Photos rather than replacing it. You'll end up with a second Photos icon.
+
+The wizard is hosted on GitHub Pages rather than served by this container because WebUSB requires a secure context. `http://localhost:8080` qualifies, but `http://192.168.1.x:8080` does not — and that is how most people reach a self-hosted container.
+
+### By hand
+
+If you'd rather not use the wizard, or it won't connect:
+
+1. Install [GmsCore](https://github.com/ReVanced/GmsCore/releases) and a [patched Google Photos APK](https://github.com/j-hc/revanced-magisk-module/releases). Note that repo publishes rolling releases — the newest one may not contain a Photos build, so look back a few.
 2. Connect the device over ADB and run:
 
    ```bash
    adb logcat | grep "auth%2Fphotos.native"
    ```
 
-3. Sign in to Google Photos on the device. One or more matching lines appear.
+3. Add your Google account **inside GmsCore**, then open Google Photos and pick it. The GmsCore sign-in is the one that emits the line.
 4. Copy everything from `androidId=` to the end of the line. That's your `auth_data`.
 
-The wizard shows these steps inline with copyable commands, so you don't need to keep this page open while you work. If your device is rooted, the [gpmc README](https://github.com/xob0t/gpmc) documents an HTTP Toolkit method as well.
+The container's own setup wizard shows these steps inline with copyable commands, so you don't need to keep this page open while you work. If your device is rooted, the [gpmc README](https://github.com/xob0t/gpmc) documents an HTTP Toolkit method as well.
 
-Treat that string like a password — it can't be rotated easily. This service redacts it from logs, events and error messages, but don't paste it into a GitHub issue.
+Treat that string like a password — it can't be rotated easily. This service redacts it from logs, events and error messages, but don't paste it into a GitHub issue. Because it can't be rotated, note that the wizard is a page served from GitHub Pages: the credential passes through JavaScript delivered by that host, which is a different trust posture from typing a command into your own terminal. The by-hand route above avoids it entirely.
 
 ## The setup wizard
 
@@ -196,6 +214,8 @@ Tested end to end against a real Immich 3.2.2 instance and a real Google Photos 
 - ✅ Motion photos: with real Pixel and Samsung samples, Immich extracts the video into a hidden asset, leaves the original JPEG byte-identical, and the eligibility rule uploads the still while skipping the clip.
 
 **Not verified:** whether Google renders those uploaded motion photos as motion photos. The bytes go up intact, which is what matters mechanically, but nobody has confirmed the result in a real account — so this says so rather than implying more.
+
+**Not verified:** the browser credential wizard, past the point of connecting to a device. The USB connection, device authorisation and installed-app detection are exercised; the streamed APK install, the app launch and the log capture that extracts the credential are written against the ADB library's published interfaces but have not yet been run end to end against real hardware. If it fails for you, the by-hand steps above are the fallback, and a bug report with the wizard's log panel contents is genuinely useful.
 
 ## Contributing
 
