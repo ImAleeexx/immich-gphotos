@@ -190,4 +190,4 @@ def evaluate_readiness(services: Services) -> Readiness:
 
 @router.get("/readiness")
 def readiness(request: Request) -> dict:
-    return evaluate_readiness(request.app.state.services).as_dict()
+    return evaluate_readiness(request.state.services).as_dict()

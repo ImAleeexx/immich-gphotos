@@ -34,7 +34,23 @@ def asset_from_webhook(payload: dict) -> Asset:
 
 @router.post("/hooks/immich")
 async def receive(request: Request) -> dict:
-    services = request.app.state.services
+    # RULING R1: `/hooks/immich` is in `auth.OPEN_PATHS`, so `require_session`
+    # returns before it ever resolves an account -- `request.state.services`
+    # is simply never set for this path, and reading it here would turn
+    # every webhook delivery into a 500 that Immich's action never surfaces
+    # to anyone. Resolve the account directly from the registry instead.
+    # Task 7 adds a per-account webhook path; until then this is the one
+    # pre-multi-account install's account, recovered the same way the
+    # migration recorded it (`legacy_webhook_account`), falling back to the
+    # first account if that setting is somehow missing.
+    registry = request.app.state.accounts
+    account = registry.get(registry.legacy_account_id()) or registry.default()
+    if account is None:
+        # No account exists at all (a fresh install, or every account
+        # removed). Nothing to enqueue against; fail closed rather than
+        # raise on `account.services` below.
+        raise HTTPException(status_code=503, detail="no accounts configured")
+    services = account.services
     supplied = request.headers.get(services.webhook_header, "")
     # Starlette decodes headers as latin-1, so a supplied secret with any byte
     # >= 0x80 is a non-ASCII str; hmac.compare_digest raises TypeError on that

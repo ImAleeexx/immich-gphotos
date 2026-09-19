@@ -19,6 +19,8 @@ class StubRuntime:
 
 @pytest.fixture
 def http(tmp_path):
+    from immich_gphotos.accounts.registry import Account, AccountRegistry
+
     conn = connect(tmp_path / "t.db")
     clock = FakeClock()
     assets = AssetRepo(conn, clock)
@@ -38,7 +40,14 @@ def http(tmp_path):
         settings=Settings(),
         webhook_secret="s",
     )
-    return TestClient(create_app(services))
+    # /metrics is an open path -- it resolves the default account straight
+    # from the registry (Ruling R1), so no login is needed here.
+    registry = AccountRegistry(tmp_path / "registry", env={})
+    record = registry.accounts_repo.add(
+        account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"
+    )
+    registry.register(Account(record=record, services=services, loops=None))
+    return TestClient(create_app(registry))
 
 
 def test_healthz_is_open_and_ok(http):
@@ -52,3 +61,37 @@ def test_metrics_expose_prometheus_counters(http):
     assert "immich_gphotos_assets_total" in body
     assert 'state="synced"' in body
     assert "immich_gphotos_paused 0" in body
+
+
+def test_metrics_on_a_fresh_install_with_no_accounts_reports_zero_rather_than_500(tmp_path):
+    """Ruling R1: /metrics is unauthenticated and unwatched -- Prometheus
+    scraping a container nobody has added an account to yet must get a clean
+    200 with no asset-state lines, never a 500 from `.services` on `None`."""
+    from immich_gphotos.accounts.registry import AccountRegistry
+
+    registry = AccountRegistry(tmp_path / "registry", env={})
+    assert registry.default() is None
+    http = TestClient(create_app(registry))
+
+    response = http.get("/metrics")
+
+    assert response.status_code == 200
+    # The HELP/TYPE header lines are unconditional; what must be absent is any
+    # actual per-state gauge value, which only exists once counts_by_state()
+    # has something to report.
+    assert "immich_gphotos_assets_total{state=" not in response.text
+    assert "immich_gphotos_paused 0" in response.text
+
+
+def test_healthz_is_open_and_ok_with_no_accounts(tmp_path):
+    """/healthz never touches an account at all, so it must be unaffected by
+    whether any exist."""
+    from immich_gphotos.accounts.registry import AccountRegistry
+
+    registry = AccountRegistry(tmp_path / "registry", env={})
+    http = TestClient(create_app(registry))
+
+    response = http.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"

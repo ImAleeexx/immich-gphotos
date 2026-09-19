@@ -58,7 +58,7 @@ class WizardOptions(SettingsPatch):
 def wizard_status(request: Request) -> dict:
     """What's already configured, so the page can skip finished steps and
     report the detected mode -- never a credential, only booleans/ids."""
-    services: Services = request.app.state.services
+    services: Services = request.state.services
     immich_configured = bool(
         services.settings_repo.get(IMMICH_URL_KEY) and services.settings_repo.get(IMMICH_KEY_KEY)
     )
@@ -85,7 +85,7 @@ def wizard_status(request: Request) -> dict:
 
 @router.post("/immich")
 def wizard_immich(payload: ImmichRequest, request: Request) -> dict:
-    services: Services = request.app.state.services
+    services: Services = request.state.services
     url = payload.immich_url.strip()
     key = payload.immich_api_key.strip()
     if not url or not key:
@@ -124,7 +124,7 @@ def wizard_immich(payload: ImmichRequest, request: Request) -> dict:
 
 @router.post("/google")
 def wizard_google(payload: GoogleRequest, request: Request) -> dict:
-    services: Services = request.app.state.services
+    services: Services = request.state.services
     auth_data = payload.google_auth_data.strip()
     if not auth_data:
         raise HTTPException(status_code=422, detail="auth_data is required")
@@ -146,7 +146,7 @@ def wizard_google(payload: GoogleRequest, request: Request) -> dict:
 
 @router.post("/workflow")
 def wizard_workflow(payload: WorkflowRequest, request: Request) -> dict:
-    services: Services = request.app.state.services
+    services: Services = request.state.services
     if not (services.settings_repo.get(IMMICH_URL_KEY) and services.settings_repo.get(IMMICH_KEY_KEY)):
         raise HTTPException(status_code=400, detail="connect Immich before registering the workflow")
     if services.immich is None or isinstance(services.immich, FakeImmichClient):
@@ -184,7 +184,7 @@ def wizard_workflow(payload: WorkflowRequest, request: Request) -> dict:
 
 @router.post("/options")
 def wizard_options(payload: WizardOptions, request: Request) -> dict:
-    services: Services = request.app.state.services
+    services: Services = request.state.services
     require_deletion_confirmation(payload, currently_enabled=services.settings.deletions_enabled)
     updates = resolve_settings_updates(payload, exclude={"start_backfill", "confirm_deletions"})
 

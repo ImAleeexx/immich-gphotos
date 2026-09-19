@@ -7,15 +7,34 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from immich_gphotos.accounts.registry import Account, AccountRegistry
 from immich_gphotos.api import auth, hooks, ops, pages, readiness, routes, stream, wizard
-from immich_gphotos.services import Services
 
 STATIC_DIR = Path(__file__).parent.parent / "web" / "static"
 
+# The cookie naming which account a browser is currently looking at. Absent
+# entirely (a client that never visited the not-yet-built account switcher,
+# or /api-only usage) simply means "the default account" -- see
+# `resolve_account`.
+ACCOUNT_COOKIE = "igp_account"
 
-def create_app(services: Services) -> FastAPI:
+
+def resolve_account(registry: AccountRegistry, request: Request) -> Account | None:
+    """The account every request acts on: the cookie when it names a real
+    one, the first account otherwise. An unknown or stale cookie falls back
+    rather than 404ing -- an account removed in another tab must not brick
+    the UI for the browser that still holds its cookie."""
+    requested = request.cookies.get(ACCOUNT_COOKIE)
+    if requested:
+        account = registry.get(requested)
+        if account is not None:
+            return account
+    return registry.default()
+
+
+def create_app(registry: AccountRegistry) -> FastAPI:
     app = FastAPI(title="immich-gphotos", docs_url=None, redoc_url=None)
-    app.state.services = services
+    app.state.accounts = registry
 
     @app.exception_handler(RequestValidationError)
     async def strip_input_from_validation_errors(
@@ -63,7 +82,7 @@ def create_app(services: Services) -> FastAPI:
     async def require_session(request, call_next):
         if auth.is_open(request.url.path):
             return await call_next(request)
-        expected = services.settings_repo.get(auth.SESSION_COOKIE)
+        expected = registry.settings.get(auth.SESSION_COOKIE)
         supplied = request.cookies.get(auth.SESSION_COOKIE)
         # A missing cookie or missing stored token must fail closed before
         # ever reaching compare_digest (it requires two real strings); once
@@ -76,6 +95,26 @@ def create_app(services: Services) -> FastAPI:
             if request.url.path.startswith("/api"):
                 return JSONResponse({"detail": "unauthenticated"}, status_code=401)
             return RedirectResponse("/login", status_code=307)
+
+        # RULING R2: account resolution happens inline here, once the session
+        # itself has checked out, rather than in a second middleware. A
+        # second middleware would have to re-implement is_open's exemption
+        # for /login (which is account-agnostic by design, so a fresh
+        # install with zero accounts can still log in) to keep it reachable
+        # -- pure duplication of the check just above, for no benefit over
+        # falling through to here.
+        account = resolve_account(registry, request)
+        if account is None and not request.url.path.startswith("/accounts"):
+            # A fresh install, or every account removed: nothing to serve.
+            # /accounts (Task 9's "add an account" page) is exempted so the
+            # one route capable of fixing this stays reachable -- it does not
+            # exist yet, which is expected (Ruling R5); everything else
+            # bounces there instead of touching a nonexistent `.services`.
+            if request.url.path.startswith("/api"):
+                return JSONResponse({"detail": "no accounts configured"}, status_code=409)
+            return RedirectResponse("/accounts", status_code=307)
+        request.state.account = account
+        request.state.services = account.services if account is not None else None
         return await call_next(request)
 
     # Resolved relative to __file__ for the same reason api/pages.py resolves

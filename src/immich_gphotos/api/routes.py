@@ -123,12 +123,12 @@ def status_snapshot(services: Services) -> dict[str, Any]:
 
 @router.get("/status")
 def status(request: Request) -> dict:
-    return status_snapshot(request.app.state.services)
+    return status_snapshot(request.state.services)
 
 
 @router.get("/failures")
 def failures(request: Request) -> list[dict]:
-    services: Services = request.app.state.services
+    services: Services = request.state.services
     return [
         {
             "immich_id": s.asset.immich_id,
@@ -143,7 +143,7 @@ def failures(request: Request) -> list[dict]:
 
 @router.post("/failures/{asset_id}/retry")
 def retry(asset_id: str, request: Request) -> dict:
-    services: Services = request.app.state.services
+    services: Services = request.state.services
     if not services.assets.retry_now(asset_id):
         raise HTTPException(status_code=404, detail="no quarantined asset with that id")
     services.events.add("info", f"manual retry requested for {asset_id}")
@@ -162,7 +162,7 @@ def get_settings(request: Request) -> dict:
     now rebuilds the live runtime graph on every write, so `services.settings`
     is always the truth and nothing needs to be read back from storage here.
     """
-    services: Services = request.app.state.services
+    services: Services = request.state.services
     return {
         "quality": services.settings.quality,
         "albums_enabled": services.settings.albums_enabled,
@@ -174,7 +174,7 @@ def get_settings(request: Request) -> dict:
 
 @router.put("/settings")
 def put_settings(patch: SettingsPatch, request: Request) -> dict:
-    services: Services = request.app.state.services
+    services: Services = request.state.services
     require_deletion_confirmation(patch, currently_enabled=services.settings.deletions_enabled)
     updates = resolve_settings_updates(patch, exclude={"confirm_deletions"})
     stored = dict(services.settings_repo.get(SETTING_KEY) or {})
@@ -192,7 +192,7 @@ def put_settings(patch: SettingsPatch, request: Request) -> dict:
 
 @router.post("/backfill/start")
 def backfill_start(request: Request) -> dict:
-    services: Services = request.app.state.services
+    services: Services = request.state.services
     services.backfill.start()
     services.events.add("info", "backfill started")
     return {"running": True}
@@ -200,6 +200,6 @@ def backfill_start(request: Request) -> dict:
 
 @router.post("/backfill/reset")
 def backfill_reset(request: Request) -> dict:
-    services: Services = request.app.state.services
+    services: Services = request.state.services
     services.backfill.reset()
     return {"running": False}

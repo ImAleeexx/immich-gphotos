@@ -2,6 +2,7 @@ import logging
 
 from fastapi.testclient import TestClient
 
+from immich_gphotos.accounts.registry import Account, AccountRegistry
 from immich_gphotos.api.app import create_app
 from immich_gphotos.api.routes import SETTING_KEY
 from immich_gphotos.main import build_services
@@ -10,8 +11,13 @@ from immich_gphotos.store.kv import SettingRepo
 
 
 def test_build_services_wires_a_working_app(tmp_path):
-    services, loops = build_services(tmp_path, env={})
-    client = TestClient(create_app(services))
+    services, loops = build_services(tmp_path / "account", env={})
+    registry = AccountRegistry(tmp_path / "registry", env={})
+    record = registry.accounts_repo.add(
+        account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"
+    )
+    registry.register(Account(record=record, services=services, loops=loops))
+    client = TestClient(create_app(registry))
     assert client.get("/healthz").json()["status"] == "ok"
     assert services.webhook_secret
     assert loops is not None

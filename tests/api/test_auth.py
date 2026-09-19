@@ -1,6 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from immich_gphotos.accounts.registry import Account, AccountRegistry
 from immich_gphotos.api.app import create_app
 from immich_gphotos.api.auth import PASSWORD_KEY, SESSION_COOKIE, hash_password, verify_password
 from immich_gphotos.clock import FakeClock
@@ -32,7 +33,15 @@ def rig(tmp_path):
         settings=Settings(),
         webhook_secret="s3cret",
     )
-    return TestClient(create_app(services), follow_redirects=False), services
+    # Task 4: the admin password and session token now live in the control
+    # database (`registry.settings`), never in an account's own
+    # settings_repo -- see accounts/control.py's module docstring.
+    registry = AccountRegistry(tmp_path / "registry", env={})
+    record = registry.accounts_repo.add(
+        account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"
+    )
+    registry.register(Account(record=record, services=services, loops=None))
+    return TestClient(create_app(registry), follow_redirects=False), registry
 
 
 def test_password_hashes_are_salted_and_verifiable():
@@ -61,21 +70,21 @@ def test_webhook_is_reachable_without_a_session(rig):
 
 
 def test_login_with_the_right_password_grants_access(rig):
-    http, services = rig
-    services.settings_repo.set(PASSWORD_KEY, hash_password("hunter2"))
+    http, registry = rig
+    registry.settings.set(PASSWORD_KEY, hash_password("hunter2"))
     assert http.post("/login", data={"password": "hunter2"}).status_code == 303
     assert http.get("/api/status").status_code == 200
 
 
 def test_login_with_the_wrong_password_is_refused(rig):
-    http, services = rig
+    http, registry = rig
     original = hash_password("hunter2")
-    services.settings_repo.set(PASSWORD_KEY, original)
+    registry.settings.set(PASSWORD_KEY, original)
     assert http.post("/login", data={"password": "nope"}).status_code == 401
     assert http.get("/api/status").status_code == 401
     # The authenticated (non-first-run) branch must never touch the stored
     # hash -- only the first-run branch is allowed to write PASSWORD_KEY.
-    assert services.settings_repo.get(PASSWORD_KEY) == original
+    assert registry.settings.get(PASSWORD_KEY) == original
 
 
 def test_first_run_login_page_offers_to_set_a_password(rig):
@@ -93,14 +102,14 @@ def test_first_run_login_page_offers_to_set_a_password(rig):
 
 def test_logout_invalidates_the_old_session_cookie(rig):
     """A `/logout` that only deletes the browser cookie leaves the session
-    token in settings_repo untouched, so a *captured* copy of the old cookie
-    (shared machine, browser history, a proxy log) would keep working
+    token in registry.settings untouched, so a *captured* copy of the old
+    cookie (shared machine, browser history, a proxy log) would keep working
     indefinitely. Proving a fresh, cookie-less client is unauthenticated after
     logout would pass even with that bug -- this replays the exact old cookie
     value on a separate client instead.
     """
-    http, services = rig
-    services.settings_repo.set(PASSWORD_KEY, hash_password("hunter2"))
+    http, registry = rig
+    registry.settings.set(PASSWORD_KEY, hash_password("hunter2"))
     assert http.post("/login", data={"password": "hunter2"}).status_code == 303
     old_cookie = http.cookies.get(SESSION_COOKIE)
     assert old_cookie is not None
@@ -108,7 +117,7 @@ def test_logout_invalidates_the_old_session_cookie(rig):
 
     assert http.post("/logout").status_code == 303
 
-    replay = TestClient(create_app(services), follow_redirects=False)
+    replay = TestClient(create_app(registry), follow_redirects=False)
     replay.cookies.set(SESSION_COOKIE, old_cookie)
     assert replay.get("/api/status").status_code == 401
 
@@ -118,9 +127,9 @@ def test_high_byte_session_cookie_is_rejected_not_a_500(rig):
     non-ASCII str; hmac.compare_digest raises TypeError on that instead of
     just returning False. A corrupted cookie must be a clean 401, not a 500.
     """
-    http, services = rig
-    services.settings_repo.set(PASSWORD_KEY, hash_password("hunter2"))
-    services.settings_repo.set(SESSION_COOKIE, "realtoken")
+    http, registry = rig
+    registry.settings.set(PASSWORD_KEY, hash_password("hunter2"))
+    registry.settings.set(SESSION_COOKIE, "realtoken")
     cookie_header = f"{SESSION_COOKIE}=br\xe9ken".encode("latin-1")
     response = http.get("/api/status", headers={"Cookie": cookie_header})
     assert response.status_code == 401
@@ -150,13 +159,13 @@ def test_first_run_login_sets_the_password_and_grants_access(rig):
     the "Set password" button login.html renders in that state. Otherwise no
     code path ever sets a password and every install is locked out forever.
     """
-    http, services = rig
-    assert services.settings_repo.get(PASSWORD_KEY) is None
+    http, registry = rig
+    assert registry.settings.get(PASSWORD_KEY) is None
 
     response = http.post("/login", data={"password": "first-timer"})
     assert response.status_code == 303
 
-    stored = services.settings_repo.get(PASSWORD_KEY)
+    stored = registry.settings.get(PASSWORD_KEY)
     assert stored is not None
     assert verify_password("first-timer", stored) is True
 

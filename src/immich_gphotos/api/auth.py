@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import secrets
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -10,6 +11,9 @@ from fastapi.responses import RedirectResponse
 # accounts.migrate, which runs on the boot path, can read them without
 # importing this module and dragging FastAPI in through it.
 from immich_gphotos.storage_keys import PASSWORD_KEY, SESSION_COOKIE  # noqa: F401
+
+if TYPE_CHECKING:
+    from immich_gphotos.accounts.registry import AccountRegistry
 
 router = APIRouter()
 
@@ -41,8 +45,12 @@ def verify_password(raw: str, stored: str) -> bool:
     return hmac.compare_digest(digest.hex(), digest_hex)
 
 
-def requires_setup(services) -> bool:
-    return services.settings_repo.get(PASSWORD_KEY) is None
+def requires_setup(registry: "AccountRegistry") -> bool:
+    # The admin password lives in the control database, not any account's --
+    # see the module docstring on `accounts.control`. Reading it off the
+    # registry rather than a `Services` is what lets this be true (and the
+    # login page render) before a single account exists.
+    return registry.settings.get(PASSWORD_KEY) is None
 
 
 def is_open(path: str) -> bool:
@@ -51,19 +59,19 @@ def is_open(path: str) -> bool:
 
 @router.post("/login")
 def login(request: Request, password: str = Form(...)):
-    services = request.app.state.services
-    if requires_setup(services):
+    registry = request.app.state.accounts
+    if requires_setup(registry):
         # Fresh install: nothing is stored yet, so the password submitted here
         # is the one being set, matching the "Set password" button login.html
         # renders in this state (see task-20 Correction 1).
-        services.settings_repo.set(PASSWORD_KEY, hash_password(password))
+        registry.settings.set(PASSWORD_KEY, hash_password(password))
     else:
-        stored = services.settings_repo.get(PASSWORD_KEY)
+        stored = registry.settings.get(PASSWORD_KEY)
         if not verify_password(password, stored):
             raise HTTPException(status_code=401, detail="wrong password")
 
     token = secrets.token_urlsafe(32)
-    services.settings_repo.set(SESSION_COOKIE, token)
+    registry.settings.set(SESSION_COOKIE, token)
     response = RedirectResponse("/", status_code=303)
     response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax")
     return response
@@ -71,11 +79,11 @@ def login(request: Request, password: str = Form(...)):
 
 @router.post("/logout")
 def logout(request: Request):
-    services = request.app.state.services
-    # The middleware trusts settings_repo, not the browser, as the source of
-    # truth for whether a session is live: clearing only the cookie would
+    registry = request.app.state.accounts
+    # The middleware trusts registry.settings, not the browser, as the source
+    # of truth for whether a session is live: clearing only the cookie would
     # leave a captured cookie value valid forever.
-    services.settings_repo.set(SESSION_COOKIE, None)
+    registry.settings.set(SESSION_COOKIE, None)
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie(SESSION_COOKIE)
     return response

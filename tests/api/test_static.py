@@ -16,8 +16,8 @@ from immich_gphotos.api.auth import is_open
 
 
 @pytest.fixture
-def http(rig_services):
-    return TestClient(create_app(rig_services), follow_redirects=False)
+def http(rig_registry):
+    return TestClient(create_app(rig_registry), follow_redirects=False)
 
 
 def test_stylesheet_loads_without_a_session(http):

@@ -12,7 +12,7 @@ router = APIRouter()
 @router.get("/events")
 async def events(request: Request, interval: float = 2.0, max_events: int = 0):
     """Server-sent status frames. `max_events` bounds the stream, for tests."""
-    services = request.app.state.services
+    services = request.state.services
 
     async def frames():
         sent = 0

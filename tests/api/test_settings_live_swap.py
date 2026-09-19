@@ -10,6 +10,7 @@ thread on in `main()`.
 
 from fastapi.testclient import TestClient
 
+from immich_gphotos.accounts.registry import Account, AccountRegistry
 from immich_gphotos.api.app import create_app
 from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
 from immich_gphotos.api.routes import DELETIONS_ENABLE_PHRASE, MIN_BANDWIDTH_BYTES_PER_SECOND
@@ -19,7 +20,8 @@ from immich_gphotos.storage_keys import GOOGLE_AUTH_KEY
 
 
 def _rig(tmp_path, initial_settings=None, google_auth_data=None):
-    services, loops_handle = build_services(tmp_path, env={})
+    account_dir = tmp_path / "account"
+    services, loops_handle = build_services(account_dir, env={})
     if initial_settings is not None or google_auth_data is not None:
         if initial_settings is not None:
             services.settings_repo.set("settings", initial_settings)
@@ -29,9 +31,18 @@ def _rig(tmp_path, initial_settings=None, google_auth_data=None):
             # (see GpmcClient._client); nothing here does that, so this dummy
             # string is never used as a credential against a real service.
             services.settings_repo.set(GOOGLE_AUTH_KEY, google_auth_data)
-        services, loops_handle = build_services(tmp_path, env={})
-    services.settings_repo.set(PASSWORD_KEY, hash_password("test-password"))
-    http = TestClient(create_app(services), follow_redirects=False)
+        services, loops_handle = build_services(account_dir, env={})
+    # Task 4: this is the exact Services/LoopsHandle build_services just
+    # built -- registered as-is (never rebuilt) so `loops_handle.current`
+    # below is the same live object the running app's routes rebuild in
+    # place, not a second, disconnected graph over the same directory.
+    registry = AccountRegistry(tmp_path / "registry", env={})
+    record = registry.accounts_repo.add(
+        account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"
+    )
+    registry.register(Account(record=record, services=services, loops=loops_handle))
+    registry.settings.set(PASSWORD_KEY, hash_password("test-password"))
+    http = TestClient(create_app(registry), follow_redirects=False)
     login = http.post("/login", data={"password": "test-password"})
     assert login.status_code == 303
     return http, services, loops_handle

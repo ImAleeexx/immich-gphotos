@@ -33,9 +33,16 @@ SECRET_AUTH_DATA = "totally-not-android-id-shaped-secret-value"
 
 @pytest.fixture
 def rig(tmp_path):
-    services, loops_handle = build_services(tmp_path, env={})
-    services.settings_repo.set(PASSWORD_KEY, hash_password("test-password"))
-    http = TestClient(create_app(services), follow_redirects=False)
+    from immich_gphotos.accounts.registry import Account, AccountRegistry
+
+    services, loops_handle = build_services(tmp_path / "account", env={})
+    registry = AccountRegistry(tmp_path / "registry", env={})
+    record = registry.accounts_repo.add(
+        account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"
+    )
+    registry.register(Account(record=record, services=services, loops=loops_handle))
+    registry.settings.set(PASSWORD_KEY, hash_password("test-password"))
+    http = TestClient(create_app(registry), follow_redirects=False)
     login = http.post("/login", data={"password": "test-password"})
     assert login.status_code == 303
     return http, services, loops_handle
@@ -278,7 +285,14 @@ def test_wizard_status_never_echoes_either_credential(rig, monkeypatch):
 def test_wizard_routes_require_a_session(tmp_path):
     """These must sit behind the same session auth as everything else under
     /api -- not added to OPEN_PATHS."""
-    services, _ = build_services(tmp_path, env={})
-    http = TestClient(create_app(services), follow_redirects=False)
+    from immich_gphotos.accounts.registry import Account, AccountRegistry
+
+    services, _ = build_services(tmp_path / "account", env={})
+    registry = AccountRegistry(tmp_path / "registry", env={})
+    record = registry.accounts_repo.add(
+        account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"
+    )
+    registry.register(Account(record=record, services=services, loops=None))
+    http = TestClient(create_app(registry), follow_redirects=False)
     response = http.post("/api/wizard/immich", json={"immich_url": BASE, "immich_api_key": "x"})
     assert response.status_code == 401

@@ -56,17 +56,55 @@ def configured_services(rig_services):
 
 
 @pytest.fixture
-def http(rig_services):
-    """An authenticated TestClient over a fresh, unconfigured install."""
+def rig_registry(tmp_path, rig_services):
+    """A registry holding exactly one account, backed by the same
+    `rig_services` graph the older fixtures build by hand."""
+    from immich_gphotos.accounts.registry import Account, AccountRegistry
+    from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
+
+    registry = AccountRegistry(tmp_path / "data", env={})
+    record = registry.accounts_repo.add(
+        account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"
+    )
+    registry.register(Account(record=record, services=rig_services, loops=None))
+    registry.settings.set(PASSWORD_KEY, hash_password("test-password"))
+    return registry
+
+
+@pytest.fixture
+def empty_registry(tmp_path):
+    """A registry with zero accounts, as a fresh install looks before anyone
+    has added one -- the state Task 9's "add account" flow starts from."""
+    from immich_gphotos.accounts.registry import AccountRegistry
+    from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
+
+    registry = AccountRegistry(tmp_path / "empty", env={})
+    registry.settings.set(PASSWORD_KEY, hash_password("test-password"))
+    return registry
+
+
+def _authenticated(registry):
     from fastapi.testclient import TestClient
 
     from immich_gphotos.api.app import create_app
-    from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
 
-    rig_services.settings_repo.set(PASSWORD_KEY, hash_password("test-password"))
-    client = TestClient(create_app(rig_services), follow_redirects=False)
+    client = TestClient(create_app(registry), follow_redirects=False)
     assert client.post("/login", data={"password": "test-password"}).status_code == 303
     return client
+
+
+@pytest.fixture
+def http(rig_registry):
+    """An authenticated TestClient over a fresh, unconfigured install."""
+    return _authenticated(rig_registry)
+
+
+@pytest.fixture
+def empty_http(empty_registry):
+    """An authenticated TestClient with zero accounts configured -- login
+    itself is account-agnostic (Ruling R2), but every other route redirects
+    or 409s once there is nothing to serve (Ruling R5)."""
+    return _authenticated(empty_registry)
 
 
 @pytest.fixture

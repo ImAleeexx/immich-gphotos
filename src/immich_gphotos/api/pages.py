@@ -19,7 +19,7 @@ def render_not_found(request: Request):
 
 @router.get("/login")
 def login_page(request: Request):
-    return _render("login.html", request, first_run=requires_setup(request.app.state.services))
+    return _render("login.html", request, first_run=requires_setup(request.app.state.accounts))
 
 
 @router.get("/")
@@ -39,7 +39,7 @@ def settings_page(request: Request):
 
 @router.get("/diagnostics")
 def diagnostics_page(request: Request):
-    services = request.app.state.services
+    services = request.state.services
     # Immich's own account of what the workflow did, so a broken webhook path is
     # diagnosable from here rather than only from our silence.
     workflow_logs = []

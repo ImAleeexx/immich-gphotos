@@ -39,6 +39,8 @@ class StubRuntime:
 
 @pytest.fixture
 def rig(tmp_path):
+    from immich_gphotos.accounts.registry import Account, AccountRegistry
+
     conn = connect(tmp_path / "t.db")
     clock = FakeClock()
     assets = AssetRepo(conn, clock)
@@ -54,11 +56,19 @@ def rig(tmp_path):
         webhook_secret="s",
         clock=clock,
     )
+    # Task 4: the admin password now lives in the control database, not this
+    # account's own settings_repo -- register this hand-built Services graph
+    # as the registry's one account, then set the password on the registry.
+    registry = AccountRegistry(tmp_path / "registry", env={})
+    record = registry.accounts_repo.add(
+        account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"
+    )
+    registry.register(Account(record=record, services=services, loops=None))
     # Task 20 adds a session-protected middleware ahead of these routes; log
     # in once here so the pre-existing Task 19 tests keep exercising the same
     # unauthenticated-request-shaped assertions against an authenticated client.
-    settings_repo.set(PASSWORD_KEY, hash_password("test-password"))
-    http = TestClient(create_app(services), follow_redirects=False)
+    registry.settings.set(PASSWORD_KEY, hash_password("test-password"))
+    http = TestClient(create_app(registry), follow_redirects=False)
     login_response = http.post("/login", data={"password": "test-password"})
     assert login_response.status_code == 303
     return http, assets, services

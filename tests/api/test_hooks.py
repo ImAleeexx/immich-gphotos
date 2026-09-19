@@ -40,6 +40,8 @@ def payload(checksum) -> dict:
 
 @pytest.fixture
 def client(tmp_path):
+    from immich_gphotos.accounts.registry import Account, AccountRegistry
+
     conn = connect(tmp_path / "t.db")
     clock = FakeClock()
     assets = AssetRepo(conn, clock)
@@ -54,7 +56,15 @@ def client(tmp_path):
         webhook_secret="s3cret",
         webhook_header="X-IGP-Secret",
     )
-    return TestClient(create_app(services)), assets
+    # /hooks/immich is an open path -- it resolves its own account straight
+    # from the registry (Ruling R1) rather than reading request.state, so a
+    # session/login is never needed here.
+    registry = AccountRegistry(tmp_path / "registry", env={})
+    record = registry.accounts_repo.add(
+        account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"
+    )
+    registry.register(Account(record=record, services=services, loops=None))
+    return TestClient(create_app(registry)), assets
 
 
 def test_asset_is_parsed_from_a_base64_checksum():
@@ -136,3 +146,45 @@ def test_high_byte_secret_header_is_rejected_not_a_500(client):
     )
     assert response.status_code == 401
     assert assets.get("a1") is None
+
+
+def test_the_webhook_uses_the_legacy_account_not_just_the_first_one(tmp_path):
+    """Ruling R1: with more than one account registered, the pre-multi-account
+    `/hooks/immich` path must land on the account the migration recorded as
+    legacy -- not silently on whichever account happens to sort first."""
+    from immich_gphotos.accounts.registry import Account, AccountRegistry
+    from immich_gphotos.storage_keys import LEGACY_WEBHOOK_ACCOUNT_KEY
+
+    registry = AccountRegistry(tmp_path / "registry", env={})
+
+    def _account(account_id: str) -> Account:
+        conn = connect(tmp_path / f"{account_id}.db")
+        clock = FakeClock()
+        services = Services(
+            assets=AssetRepo(conn, clock),
+            albums=AlbumRepo(conn),
+            cursors=CursorRepo(conn),
+            settings_repo=SettingRepo(conn),
+            events=EventRepo(conn, clock),
+            runtime=None,
+            settings=Settings(),
+            webhook_secret="s3cret",
+            webhook_header="X-IGP-Secret",
+        )
+        record = registry.accounts_repo.add(
+            account_id=account_id, label=account_id, created_at="2026-09-20T10:00:00Z"
+        )
+        account = Account(record=record, services=services, loops=None)
+        registry.register(account)
+        return account
+
+    first = _account("acct-a")
+    second = _account("acct-b")
+    registry.settings.set(LEGACY_WEBHOOK_ACCOUNT_KEY, second.id)
+
+    http = TestClient(create_app(registry))
+    response = http.post("/hooks/immich", json=payload(B64), headers={"X-IGP-Secret": "s3cret"})
+
+    assert response.status_code == 200
+    assert first.services.assets.get("a1") is None
+    assert second.services.assets.get("a1") is not None
