@@ -7,12 +7,11 @@ from pydantic import BaseModel, Field
 from immich_gphotos.composition import rebuild_runtime
 from immich_gphotos.config import Quality
 from immich_gphotos.services import Services
+from immich_gphotos.storage_keys import SETTINGS_KEY as SETTING_KEY
 from immich_gphotos.sync.backfill import BACKFILL_CURSOR
 from immich_gphotos.sync.throttle import transfer_allowed
 
 router = APIRouter(prefix="/api")
-
-SETTING_KEY = "settings"
 
 # Shared with main._merged_settings, which validates a stored settings row
 # against these same bounds so a hand-edited database row cannot apply a

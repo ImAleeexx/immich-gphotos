@@ -5,10 +5,14 @@ import secrets
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
+# Re-exported so existing importers of this module (including tests/api/*)
+# keep working untouched. The values live in storage_keys so that
+# accounts.migrate, which runs on the boot path, can read them without
+# importing this module and dragging FastAPI in through it.
+from immich_gphotos.storage_keys import PASSWORD_KEY, SESSION_COOKIE  # noqa: F401
+
 router = APIRouter()
 
-PASSWORD_KEY = "ui_password"
-SESSION_COOKIE = "igp_session"
 OPEN_PATHS = frozenset({"/hooks/immich", "/healthz", "/metrics", "/login"})
 
 # Served to unauthenticated browsers on purpose: the login page needs its own
