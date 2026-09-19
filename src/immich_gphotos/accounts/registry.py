@@ -123,6 +123,14 @@ class AccountRegistry:
         have one running. Safe to call repeatedly: an account already
         running is left alone, which is what lets Task 8 call this again
         after adding an account and have it start only that one.
+
+        The `is not None` guard actually means "ever had a thread," not
+        "currently running": `stop_all` deliberately leaves a finished
+        thread's `Account.thread` set rather than resetting it to `None`
+        (Ruling R9 -- `stop_all` is shutdown-only, restart-in-place is
+        unsupported), so this method will not restart an account that was
+        stopped. Re-nulling `account.thread` in `stop_all` so this guard
+        would restart it is exactly what R9 fixed; don't reintroduce it.
         """
         for account in self.all():
             if account.thread is not None:

@@ -4,6 +4,25 @@ from typing import Literal
 
 Quality = Literal["original", "saver", "quota"]
 
+# Bounds on `Settings.worker_threads` and `Settings.bandwidth_bytes_per_second`,
+# shared between the API's `SettingsPatch` validation (`api.routes`) and
+# `accounts.build._merged_settings`, which validates a stored settings row
+# against these same bounds so a hand-edited database row can never apply a
+# value the API itself would reject. Defined here rather than in `api.routes`
+# because this is a true leaf module (no internal imports) that already owns
+# `Settings`, so both `api.routes` and `accounts.build` -- which must never
+# import `api` -- can read them without a dependency cycle. `api.routes`
+# re-exports all three for its existing importers.
+MIN_WORKER_THREADS = 1
+MAX_WORKER_THREADS = 16
+
+# 0 passes `ge=0` and looks like a reasonable way to type "no cap" (the UI's
+# own "blank = unlimited" hint invites exactly that), but TokenBucket must
+# reject or ignore a non-positive rate rather than run with one -- so it can
+# never be a valid *cap* in the first place. blank/omitted (None) is still
+# how "unlimited" is actually spelled.
+MIN_BANDWIDTH_BYTES_PER_SECOND = 65536
+
 
 @dataclass(frozen=True)
 class Window:

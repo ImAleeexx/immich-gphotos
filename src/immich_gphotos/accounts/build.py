@@ -17,7 +17,13 @@ from typing import get_args
 
 from immich_gphotos.clock import Clock, SystemClock
 from immich_gphotos.composition import build_runtime_graph
-from immich_gphotos.config import Quality, Settings
+from immich_gphotos.config import (
+    MAX_WORKER_THREADS,
+    MIN_BANDWIDTH_BYTES_PER_SECOND,
+    MIN_WORKER_THREADS,
+    Quality,
+    Settings,
+)
 from immich_gphotos.gphotos.client import GpmcClient
 from immich_gphotos.gphotos.fake import FakeGooglePhotosClient
 from immich_gphotos.immich.client import HttpImmichClient
@@ -29,9 +35,6 @@ from immich_gphotos.storage_keys import (
     GOOGLE_AUTH_KEY,
     IMMICH_KEY_KEY,
     IMMICH_URL_KEY,
-    MAX_WORKER_THREADS,
-    MIN_BANDWIDTH_BYTES_PER_SECOND,
-    MIN_WORKER_THREADS,
     SECRET_KEY,
     SETTINGS_KEY,
     WORKFLOW_ID_KEY,

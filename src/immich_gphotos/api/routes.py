@@ -5,13 +5,13 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from immich_gphotos.composition import rebuild_runtime
-from immich_gphotos.config import Quality
-from immich_gphotos.services import Services
-from immich_gphotos.storage_keys import (
+from immich_gphotos.config import (
     MAX_WORKER_THREADS,
     MIN_BANDWIDTH_BYTES_PER_SECOND,
     MIN_WORKER_THREADS,
+    Quality,
 )
+from immich_gphotos.services import Services
 from immich_gphotos.storage_keys import SETTINGS_KEY as SETTING_KEY
 from immich_gphotos.sync.backfill import BACKFILL_CURSOR
 from immich_gphotos.sync.throttle import transfer_allowed
@@ -19,8 +19,8 @@ from immich_gphotos.sync.throttle import transfer_allowed
 router = APIRouter(prefix="/api")
 
 # MIN_WORKER_THREADS, MAX_WORKER_THREADS and MIN_BANDWIDTH_BYTES_PER_SECOND
-# now live in storage_keys (shared with accounts.build._merged_settings,
-# which validates a stored settings row against these same bounds so a
+# now live in config (shared with accounts.build._merged_settings, which
+# validates a stored settings row against these same bounds so a
 # hand-edited database row cannot apply a value the API itself would
 # reject) and are re-exported here so existing importers of this module
 # keep working untouched.
