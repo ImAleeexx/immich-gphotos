@@ -72,7 +72,9 @@ COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def apply_migrations(conn: sqlite3.Connection) -> None:
+def apply_migrations(
+    conn: sqlite3.Connection, migrations: tuple[tuple[str, str, str], ...] = COLUMN_MIGRATIONS
+) -> None:
     """Bring an existing database up to SCHEMA. Safe to run on every open.
 
     This is the one place in the codebase that runs an execute-then-read pair
@@ -95,7 +97,7 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     have worse problems than this. Each ALTER is its own atomic transaction
     (`isolation_level=None`), so a death mid-migration leaves no half-state.
     """
-    for table, column, ddl in COLUMN_MIGRATIONS:
+    for table, column, ddl in migrations:
         columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
             conn.execute(ddl)

@@ -2,7 +2,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from immich_gphotos.store.schema import SCHEMA, apply_migrations
+from immich_gphotos.store.schema import COLUMN_MIGRATIONS, SCHEMA, apply_migrations
 
 
 class LockingConnection(sqlite3.Connection):
@@ -23,7 +23,11 @@ class LockingConnection(sqlite3.Connection):
         self.lock = threading.RLock()
 
 
-def connect(path: Path) -> sqlite3.Connection:
+def connect(
+    path: Path,
+    schema: str = SCHEMA,
+    migrations: tuple[tuple[str, str, str], ...] = COLUMN_MIGRATIONS,
+) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None, factory=LockingConnection)
     # The database holds the Immich API key and Google auth_data.
@@ -33,6 +37,6 @@ def connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.executescript(SCHEMA)
-    apply_migrations(conn)
+    conn.executescript(schema)
+    apply_migrations(conn, migrations)
     return conn
