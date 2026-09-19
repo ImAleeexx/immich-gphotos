@@ -18,6 +18,18 @@ STATIC_DIR = Path(__file__).parent.parent / "web" / "static"
 # `resolve_account`.
 ACCOUNT_COOKIE = "igp_account"
 
+# RULING R10: routes that must stay behind session auth (so they are
+# deliberately NOT in `auth.OPEN_PATHS`) but that need no account to do
+# their job, and so must not be swept up in the no-account redirect/409
+# below. `/logout` is the only current member: the session token it clears
+# lives in `registry.settings`, not in any account. Without this exemption,
+# a zero-account install (Ruling R5's starting state, not a corner case) 307s
+# a logout POST to /accounts -- which preserves the method, so the browser
+# re-POSTs there and gets a 404 today / 405 once Task 9 builds that route as
+# a GET, leaving the logout button in the shared header permanently dead
+# until an account exists.
+ACCOUNT_AGNOSTIC_PATHS = frozenset({"/logout"})
+
 
 def resolve_account(registry: AccountRegistry, request: Request) -> Account | None:
     """The account every request acts on: the cookie when it names a real
@@ -104,7 +116,11 @@ def create_app(registry: AccountRegistry) -> FastAPI:
         # -- pure duplication of the check just above, for no benefit over
         # falling through to here.
         account = resolve_account(registry, request)
-        if account is None and not request.url.path.startswith("/accounts"):
+        if (
+            account is None
+            and not request.url.path.startswith("/accounts")
+            and request.url.path not in ACCOUNT_AGNOSTIC_PATHS
+        ):
             # A fresh install, or every account removed: nothing to serve.
             # /accounts (Task 9's "add an account" page) is exempted so the
             # one route capable of fixing this stays reachable -- it does not

@@ -25,6 +25,19 @@ def test_with_no_accounts_an_api_path_gets_a_409_not_a_redirect(empty_http):
     assert response.status_code == 409
 
 
+def test_logout_works_with_no_accounts_configured(empty_http):
+    """Ruling R10: /logout is session-authenticated (not in OPEN_PATHS) but
+    account-agnostic -- the session token lives in registry.settings, not
+    any account. Before this fix, the no-account redirect swept it up too:
+    a 307 to /accounts preserves the POST, so the browser would re-POST
+    there and hit a 404/405, leaving the logout button in the shared header
+    permanently dead on a fresh install. It must behave exactly like any
+    other logout: a 303 to /login, never a redirect to /accounts."""
+    response = empty_http.post("/logout")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
 def test_the_password_lives_in_the_control_database_not_an_account(rig_registry):
     from immich_gphotos.api.auth import PASSWORD_KEY
 

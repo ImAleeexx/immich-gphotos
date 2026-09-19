@@ -16,23 +16,28 @@ def test_every_page_links_the_stylesheet_and_favicon(http, path):
 @pytest.mark.parametrize(
     "path", ["/", "/failures", "/settings", "/diagnostics", "/wizard", "/login", "/no-such-page"]
 )
-def test_no_page_carries_an_inline_style_block(http, rig_registry, path):
+def test_no_page_carries_an_inline_style_block(http, tmp_path, path):
     """All styling lives in app.css. An inline <style> block is how the old
     shell worked and is what this redesign removes -- it defeats caching and
     puts the design system out of reach of every other page.
 
-    /login is fetched with a fresh, unauthenticated client built straight
-    from `rig_registry`: it renders for a visitor with no session, and the
-    already-logged-in `http` fixture would not exercise that path.
+    /login is fetched with a fresh, password-less registry (the same
+    pattern as test_secondary_pages.py's
+    test_the_first_run_login_page_still_offers_to_set_a_password): it
+    renders login.html's first-run branch, which `rig_registry` (a password
+    already set) would not exercise, and the already-logged-in `http`
+    fixture would not reach at all.
     /no-such-page is the 404 page, requested the same way
     `test_an_unknown_path_renders_the_branded_404_for_a_browser` does.
     """
     if path == "/login":
         from fastapi.testclient import TestClient
 
+        from immich_gphotos.accounts.registry import AccountRegistry
         from immich_gphotos.api.app import create_app
 
-        client = TestClient(create_app(rig_registry), follow_redirects=False)
+        fresh = AccountRegistry(tmp_path, env={})
+        client = TestClient(create_app(fresh), follow_redirects=False)
         body = client.get(path).text
     elif path == "/no-such-page":
         body = http.get(path, headers={"accept": "text/html"}).text
