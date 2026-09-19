@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Google Photos credential wizard</title>
+<style>
+  :root{color-scheme:dark;--bg:#0f1016;--fg:#e9e9f2;--dim:#8d8fa6;--ok:#4ade80;--bad:#f87171;
+        --warn:#fbbf24;--acc:#7c8cff;--card:#191a24;--line:#2a2c3a}
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 16px 60px;background:var(--bg);color:var(--fg);
+       font:15px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+  main{max-width:780px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 6px}
+  .lede{color:var(--dim);font-size:13.5px;margin:0 0 26px}
+  .step{background:var(--card);border:1px solid var(--line);border-radius:12px;
+        padding:18px;margin-bottom:14px;opacity:.45;transition:opacity .2s}
+  .step.active{opacity:1;border-color:#3b3e55}
+  .step.done{opacity:.8}
+  .step.done .hdr b::after{content:" ✓";color:var(--ok)}
+  .hdr{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+  .num{width:24px;height:24px;border-radius:50%;background:#2a2c3a;color:var(--dim);
+       display:grid;place-items:center;font-size:12px;font-weight:700;flex:none}
+  .step.active .num{background:var(--acc);color:#0d0e14}
+  .step.done .num{background:var(--ok);color:#0d0e14}
+  .hdr b{font-size:15px}
+  .body{padding-left:34px}
+  p{margin:6px 0}
+  .sub{color:var(--dim);font-size:13px}
+  button{background:var(--acc);color:#0d0e14;border:0;border-radius:8px;padding:9px 16px;
+         font-weight:650;font-size:14px;cursor:pointer;font-family:inherit}
+  button.sec{background:#2a2c3a;color:var(--fg)}
+  button:disabled{opacity:.35;cursor:not-allowed}
+  .row{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:12px}
+  input[type=file]{font-size:12.5px;color:var(--dim);max-width:100%}
+  code{background:#0b0c11;padding:2px 6px;border-radius:4px;font-size:12.5px;
+       font-family:ui-monospace,Menlo,monospace}
+  .note{border-left:3px solid var(--warn);background:#fbbf2410;padding:10px 12px;
+        border-radius:0 8px 8px 0;margin:12px 0;font-size:13.5px}
+  .note b{color:var(--warn)}
+  .note ol{margin:8px 0 0;padding-left:20px}.note li{margin:3px 0}
+  .err{border-left:3px solid var(--bad);background:#f8717110;padding:10px 12px;
+       border-radius:0 8px 8px 0;margin:10px 0;font-size:13.5px;display:none}
+  .err.show{display:block}.err b{color:var(--bad)}
+  .phone{border-left:3px solid var(--acc);background:#7c8cff10;padding:10px 12px;
+         border-radius:0 8px 8px 0;margin:12px 0;font-size:13.5px}
+  .phone b{color:var(--acc)}
+  .bar{height:6px;background:#0b0c11;border-radius:3px;overflow:hidden;margin-top:10px;display:none}
+  .bar.show{display:block}
+  .bar i{display:block;height:100%;background:var(--acc);width:0;transition:width .15s}
+  #token{width:100%;background:#0b0c11;color:var(--ok);border:1px solid var(--line);
+         border-radius:8px;padding:12px;font:12px/1.55 ui-monospace,Menlo,monospace;
+         min-height:92px;word-break:break-all;margin:10px 0}
+  #log{background:#0b0c11;border:1px solid var(--line);border-radius:8px;padding:10px;
+       height:150px;overflow:auto;font:11.5px/1.5 ui-monospace,Menlo,monospace;
+       white-space:pre-wrap;word-break:break-all;color:var(--dim);margin-top:20px}
+  .ok{color:var(--ok)}.bad{color:var(--bad)}.acc{color:var(--acc)}.warn{color:var(--warn)}
+  a{color:var(--acc)}
+  .detok{border-left:3px solid var(--ok);background:#4ade8012;padding:12px 14px;
+        border-radius:0 10px 10px 0;margin-bottom:14px;font-size:13.5px}
+  .detok b{color:var(--ok)}
+  .detpart{border-left:3px solid var(--warn);background:#fbbf2412;padding:12px 14px;
+           border-radius:0 10px 10px 0;margin-bottom:14px;font-size:13.5px}
+  .detpart b{color:var(--warn)}
+  .dl{padding:9px 0;border-top:1px solid var(--line);font-size:13.5px}
+  .st{font-size:13px;color:var(--dim);margin-left:4px}
+  details{margin-top:10px}summary{cursor:pointer;font-size:13px;color:var(--dim)}
+</style>
+</head>
+<body>
+<main>
+  <h1>Google Photos credential wizard</h1>
+  <p class="lede">Extracts the <code>auth_data</code> string that immich-gphotos needs, straight from your phone
+     over USB. Everything happens in this browser tab — nothing is uploaded anywhere. Takes about ten minutes.</p>
+
+  <!-- 1 -->
+  <div class="step active" id="s1">
+    <div class="hdr"><span class="num">1</span><b>Prepare the phone</b></div>
+    <div class="body">
+      <p class="sub">On the phone: <b>Settings → About phone → tap "Build number" seven times</b>, then
+         <b>Settings → System → Developer options → enable "USB debugging"</b>. Plug it into this computer
+         with a cable that supports data.</p>
+      <div class="note">
+        <b>Close Android Studio, VS Code and scrcpy first.</b> They run an <code>adb</code> server that
+        takes exclusive ownership of the phone, and this page will not be able to reach it.
+      </div>
+      <div class="row"><button onclick="go(2)">Done — USB debugging is on</button></div>
+    </div>
+  </div>
+
+  <!-- 2 -->
+  <div class="step" id="s2">
+    <div class="hdr"><span class="num">2</span><b>Connect</b></div>
+    <div class="body">
+      <p class="sub">Pick your phone in the browser prompt, then <b>watch the phone screen</b>.</p>
+      <div class="phone">
+        <b>On the phone:</b> a dialog says <i>"Allow USB debugging?"</i> — tick
+        <i>"Always allow from this computer"</i> and tap <b>Allow</b>. This page uses its own key,
+        so it asks even if you've authorised this computer before.
+      </div>
+      <div class="row"><button id="bConnect">Connect device</button>
+        <span class="st" id="connSt">not connected</span></div>
+      <div class="err" id="connErr"></div>
+    </div>
+  </div>
+
+  <div id="detBox" style="display:none"></div>
+
+  <!-- 3 -->
+  <div class="step" id="s3">
+    <div class="hdr"><span class="num">3</span><b>Download the two apps</b></div>
+    <div class="body">
+      <p class="sub">Google offers no API for this, so Photos has to run against a stand-in for Play Services.
+         Download both files to this computer — you'll send them to the phone in the next steps.</p>
+      <div class="row"><button id="bResolve">Get download links</button>
+        <span class="st" id="dlSt"></span></div>
+      <div id="links"></div>
+      <div class="row"><button class="sec" id="bSkipDl" onclick="go(4)">I have both files</button></div>
+    </div>
+  </div>
+
+  <!-- 4 -->
+  <div class="step" id="s4">
+    <div class="hdr"><span class="num">4</span><b>Install GmsCore</b></div>
+    <div class="body">
+      <p class="sub">Select the <code>app.revanced.android.gms-….apk</code> you downloaded.</p>
+      <div class="note">
+        <b>Play Protect will warn you — this is expected.</b> GmsCore deliberately impersonates Google
+        Play Services, which is exactly the pattern Play Protect flags. On the phone you may see
+        <i>"Blocked by Play Protect"</i> or <i>"Unsafe app blocked"</i>:
+        <ol>
+          <li>Tap <b>More details</b> (small, under the message)</li>
+          <li>Tap <b>Install anyway</b></li>
+        </ol>
+        If there's no "install anyway" option, tick the box below before installing.
+      </div>
+      <label class="sub" style="display:block;margin-top:8px">
+        <input type="checkbox" id="noVerify"> Turn off Play Protect scanning of USB installs
+        <span class="sub">(restored automatically when the wizard finishes)</span>
+      </label>
+      <div class="row">
+        <input type="file" id="fGms" accept=".apk">
+        <button id="bGms" disabled>Install GmsCore</button>
+        <span class="st" id="gmsSt"></span>
+      </div>
+      <div class="bar" id="gmsBar"><i></i></div>
+      <div class="err" id="gmsErr"></div>
+    </div>
+  </div>
+
+  <!-- 5 -->
+  <div class="step" id="s5">
+    <div class="hdr"><span class="num">5</span><b>Install Google Photos</b></div>
+    <div class="body">
+      <p class="sub">Select the <code>googlephotos-devanced-….apk</code>. It's the larger of the two.</p>
+      <div class="note">
+        <b>This does not touch your existing Google Photos.</b> The patched build installs under its
+        own name (<code>app.morphe.android.apps.photos</code>), so both sit side by side and your
+        normal app is untouched. You'll see a second Photos icon on the phone — that's the one the
+        wizard opens.
+      </div>
+      <div class="row">
+        <input type="file" id="fPhotos" accept=".apk">
+        <button id="bPhotos" disabled>Install Google Photos</button>
+        <span class="st" id="phSt"></span>
+      </div>
+      <div class="bar" id="phBar"><i></i></div>
+      <div class="err" id="phErr"></div>
+    </div>
+  </div>
+
+  <!-- 6 -->
+  <div class="step" id="s6">
+    <div class="hdr"><span class="num">6</span><b>Sign in — the credential appears here</b></div>
+    <div class="body">
+      <p class="sub">This page starts listening first, then opens the apps for you. Leave this tab open.</p>
+      <div class="phone">
+        <b>On the phone, in order:</b>
+        <ol>
+          <li><b>GmsCore</b> opens. Tap through its checklist and <b>allow</b> what it asks for
+              (battery optimisation, notifications).</li>
+          <li>Open <b>Account</b> → <b>Add Google account</b> → sign in. <u>This is the sign-in that
+              produces the credential</u> — not the one in Photos.</li>
+          <li>Come back and press <b>Open Google Photos</b>, then choose that same account.</li>
+        </ol>
+      </div>
+      <div class="row">
+        <button id="bListen">Start listening</button>
+        <button class="sec" id="bOpenGms" disabled>Open GmsCore</button>
+        <button class="sec" id="bOpenPhotos" disabled>Open Google Photos</button>
+      </div>
+      <div class="row"><span class="st" id="capSt">idle</span></div>
+      <div class="err" id="capErr"></div>
+    </div>
+  </div>
+
+  <!-- 7 -->
+  <div class="step" id="s7">
+    <div class="hdr"><span class="num">7</span><b>Your credential</b></div>
+    <div class="body">
+      <div id="token"></div>
+      <div class="row">
+        <button id="bCopy">Copy auth_data</button>
+        <button class="sec" id="bFinish">Finish &amp; restore settings</button>
+      </div>
+      <p class="sub" style="margin-top:10px">Paste this into the immich-gphotos wizard. Treat it like a
+         password — it can't be rotated easily, so don't paste it into a GitHub issue.</p>
+    </div>
+  </div>
+
+  <div id="log">ready.</div>
+  <details>
+    <summary>Nothing leaves this tab — what it talks to</summary>
+    <p class="sub"><code>api.github.com</code> to look up download links, and
+       <code>cdn.jsdelivr.net</code> to load the USB library. The APKs go from your disk to your phone
+       over the USB cable. The credential is never sent anywhere.</p>
+  </details>
+</main>
+
+<script type="module">
+const V={adb:'2.6.4',usb:'2.3.2',cred:'2.1.0'};
+const PKG_GMS='app.revanced.android.gms', PKG_PHOTOS='app.morphe.android.apps.photos';
+const $=id=>document.getElementById(id);
+const logEl=$('log');
+let adb=null, proc=null, lines=0, restoreVerify=false;
+
+function log(m,c=''){const d=document.createElement('div');if(c)d.className=c;d.textContent=m;
+  if(logEl.textContent==='ready.')logEl.textContent='';logEl.appendChild(d);logEl.scrollTop=1e9;}
+function go(n){for(let i=1;i<=7;i++){const s=$('s'+i);if(!s)continue;
+  s.classList.toggle('active',i===n);if(i<n)s.classList.add('done');}
+  $('s'+n)?.scrollIntoView({behavior:'smooth',block:'center'});}
+window.go=go;
+function err(id,html){const e=$(id);e.innerHTML=html;e.classList.add('show');}
+function clearErr(id){$(id).classList.remove('show');}
+
+/* ---------------- shell helpers ---------------- */
+async function sh(cmd){ return (await adb.subprocess.noneProtocol.spawnWaitText(cmd)).trim(); }
+
+/* ---------------- step 2: connect ---------------- */
+if(!navigator.usb){
+  $('connSt').innerHTML='<span class="bad">WebUSB unavailable</span>';
+  err('connErr','<b>This browser can\'t talk to USB devices.</b> Use Chrome, Edge or another '+
+      'Chromium browser on a desktop computer. Firefox and Safari don\'t implement WebUSB.');
+  $('bConnect').disabled=true;
+}
+
+$('bConnect').onclick=async()=>{
+  clearErr('connErr'); $('bConnect').disabled=true;
+  try{
+    const [{Adb,AdbDaemonTransport},{AdbDaemonWebUsbDeviceManager},credMod]=await Promise.all([
+      import(`https://cdn.jsdelivr.net/npm/@yume-chan/adb@${V.adb}/+esm`),
+      import(`https://cdn.jsdelivr.net/npm/@yume-chan/adb-daemon-webusb@${V.usb}/+esm`),
+      import(`https://cdn.jsdelivr.net/npm/@yume-chan/adb-credential-web@${V.cred}/+esm`)]);
+    const Store=credMod.default;
+    const mgr=AdbDaemonWebUsbDeviceManager.BROWSER;
+    if(!mgr) throw new Error('WebUSB manager unavailable');
+
+    $('connSt').textContent='pick your phone…';
+    const device=await mgr.requestDevice();
+    if(!device){$('connSt').textContent='no device selected';$('bConnect').disabled=false;return;}
+    log('device: '+device.name+' ('+device.serial+')');
+
+    const store=new Store('immich-gphotos');
+    let transport;
+    for(let a=1;;a++){
+      try{
+        $('connSt').textContent=a===1?'opening…':`retrying (${a})…`;
+        const conn=await device.connect();
+        $('connSt').innerHTML='<b>check the phone — tap Allow</b>';
+        transport=await AdbDaemonTransport.authenticate(
+          {serial:device.serial,connection:conn,credentialStore:store});
+        break;
+      }catch(e){
+        if(a>=3) throw e;
+        log('handshake failed ('+e.message+') — resetting USB…','warn');
+        try{await device.raw.reset();}catch{}
+        await new Promise(r=>setTimeout(r,800));
+      }
+    }
+    adb=new Adb(transport);
+    const model=await adb.getProp('ro.product.model').catch(()=>'?');
+    const rel=await adb.getProp('ro.build.version.release').catch(()=>'?');
+    $('connSt').innerHTML=`<span class="ok">${model} · Android ${rel}</span>`;
+    log(`connected: ${model}, Android ${rel}`,'ok');
+    refresh();
+    try{ await detect(); }catch(e){ log('detection failed: '+e.message,'warn'); }
+    go(3);
+  }catch(e){
+    const busy=/busy|claim|in use|access|denied|SecurityError|NetworkError|transfer/i.test(String(e));
+    $('connSt').innerHTML='<span class="bad">failed</span>';
+    log('connect failed: '+e,'bad');
+    err('connErr','<b>Couldn\'t open the phone.</b> '+
+      (busy?'Almost always this means another program owns it — an <code>adb</code> server started by '+
+            'Android Studio, VS Code or scrcpy. Close them, then in a terminal run:<br>'+
+            '<code>adb kill-server</code><br>If that doesn\'t help, the server may be running as '+
+            '<b>root</b> and invisible to that command — try:<br>'+
+            '<code>sudo pkill -f "adb -L tcp:5037"</code><br>Then unplug and replug the cable.'
+           :'<code>'+e.message+'</code>')+'');
+    $('bConnect').disabled=false;
+  }
+};
+
+/* ---------------- step 3: links ---------------- */
+async function newest(repo,match){
+  const r=await fetch(`https://api.github.com/repos/${repo}/releases?per_page=15`);
+  if(!r.ok) throw new Error('GitHub API '+r.status);
+  for(const rel of await r.json()){
+    const a=(rel.assets||[]).find(a=>match(a.name));
+    if(a) return {url:a.browser_download_url,name:a.name,tag:rel.tag_name,mb:(a.size/1e6).toFixed(0)};
+  }
+  throw new Error('no matching file in the last 15 releases');
+}
+$('bResolve').onclick=async e=>{
+  const st=$('dlSt'),box=$('links');
+  e.target.disabled=true;box.innerHTML='';st.textContent='looking up…';
+  try{
+    // Release assets carry no CORS headers, so the page can't fetch the bytes —
+    // these are plain links and your browser downloads them directly.
+    const g=await newest('ReVanced/GmsCore',n=>n.endsWith('.apk')&&!n.includes('-hw-'));
+    const p=await newest('j-hc/revanced-magisk-module',
+                         n=>n.toLowerCase().includes('photos')&&n.endsWith('.apk'));
+    for(const [t,i] of [['GmsCore',g],['Google Photos (patched)',p]]){
+      const d=document.createElement('div');d.className='dl';
+      d.innerHTML=`<b>${t}</b> — <a href="${i.url}" download>${i.name}</a>
+        <span class="sub"> · ${i.mb} MB</span>`;
+      box.appendChild(d);
+    }
+    st.innerHTML='<span class="ok">download both, then continue</span>';
+    log('links resolved','ok');
+  }catch(x){st.innerHTML='<span class="bad">'+x.message+'</span>';log('link lookup: '+x.message,'bad');}
+  finally{e.target.disabled=false;}
+};
+
+/* ---------------- detect what's already installed ---------------- */
+async function isInstalled(pkg){
+  try{
+    const out = await sh(`pm list packages ${pkg}`);
+    return out.split('\n').map(x=>x.trim()).includes('package:'+pkg);
+  }catch{ return false; }
+}
+async function versionOf(pkg){
+  try{
+    const o = await sh(`dumpsys package ${pkg} | grep -m1 versionName`);
+    return (o.split('=')[1]||'').trim();
+  }catch{ return ''; }
+}
+
+async function detect(){
+  const box=$('detBox');
+  const [gms,ph]=await Promise.all([isInstalled(PKG_GMS),isInstalled(PKG_PHOTOS)]);
+  const [vg,vp]=await Promise.all([gms?versionOf(PKG_GMS):'',ph?versionOf(PKG_PHOTOS):'']);
+  log(`installed: GmsCore=${gms?(vg||'yes'):'no'}  Photos(patched)=${ph?(vp||'yes'):'no'}`);
+
+  if(gms&&ph){
+    box.className='detok';
+    box.innerHTML=`<b>Both apps are already on the phone.</b>
+      GmsCore ${vg||''} and the patched Google Photos ${vp||''} are installed, so you can skip the
+      downloads and go straight to signing in.
+      <div class="row"><button onclick="go(6)">Skip to sign-in</button>
+      <button class="sec" onclick="go(3)">Reinstall them anyway</button></div>`;
+    box.style.display='block';
+    $('s4').classList.add('done'); $('s5').classList.add('done');
+    return {gms,ph,both:true};
+  }
+  if(gms||ph){
+    box.className='detpart';
+    box.innerHTML=`<b>Only one of the two is installed.</b> `+
+      (gms?`GmsCore ${vg||''} is there — you only need the patched Google Photos, so skip step 4.`
+          :`The patched Google Photos ${vp||''} is there, but GmsCore is missing. Without it Photos
+            has nothing to sign in against, so install it in step 4.`)+
+      `<div class="row"><button onclick="go(3)">Continue</button></div>`;
+    box.style.display='block';
+    if(gms) $('s4').classList.add('done');
+    if(ph)  $('s5').classList.add('done');
+  }
+  return {gms,ph,both:false};
+}
+
+/* ---------------- install ---------------- */
+function refresh(){
+  $('bGms').disabled=!(adb&&$('fGms').files.length);
+  $('bPhotos').disabled=!(adb&&$('fPhotos').files.length);
+  $('bListen').disabled=!adb;
+}
+$('fGms').onchange=refresh; $('fPhotos').onchange=refresh;
+
+async function install(file,barId,stId){
+  const bar=$(barId), fill=bar.querySelector('i'), st=$(stId);
+  bar.classList.add('show');
+  log(`installing ${file.name} (${(file.size/1e6).toFixed(0)} MB)…`,'acc');
+  // Stream into `pm install -S <size>` so the APK never lands in /data/local/tmp.
+  const p=await adb.subprocess.noneProtocol.spawn(['pm','install','-S',String(file.size)]);
+  let out='';const dec=new TextDecoder();
+  const collect=(async()=>{const r=p.output.getReader();
+    for(;;){const{done,value}=await r.read();if(done)break;out+=dec.decode(value,{stream:true});}})();
+  const w=p.stdin.getWriter(), rd=file.stream().getReader();
+  let sent=0,t0=performance.now();
+  for(;;){
+    const{done,value}=await rd.read(); if(done)break;
+    await w.write(value); sent+=value.byteLength;
+    const pct=sent/file.size*100;
+    fill.style.width=pct+'%';
+    st.textContent=`${pct.toFixed(0)}% · ${((sent/1e6)/((performance.now()-t0)/1000)).toFixed(1)} MB/s`;
+  }
+  await w.close(); await collect;
+  const ok=/Success/i.test(out);
+  log(`${file.name}: ${out.trim()||'(no output)'}`,ok?'ok':'bad');
+  return {ok,out:out.trim()};
+}
+
+$('bGms').onclick=async()=>{
+  clearErr('gmsErr'); $('bGms').disabled=true;
+  try{
+    if($('noVerify').checked){
+      await sh(['settings','put','global','verifier_verify_adb_installs','0']);
+      restoreVerify=true; log('Play Protect USB-install scanning disabled (temporary)','warn');
+    }
+    $('gmsSt').textContent='installing…';
+    const r=await install($('fGms').files[0],'gmsBar','gmsSt');
+    if(r.ok){$('gmsSt').innerHTML='<span class="ok">installed</span>';go(5);}
+    else{
+      $('gmsSt').innerHTML='<span class="bad">failed</span>';
+      err('gmsErr','<b>Install failed.</b> <code>'+(r.out||'no output')+'</code><br>'+
+        'If it mentions Play Protect or the phone showed a block dialog, tick the '+
+        '"Turn off Play Protect scanning" box above and try again.');
+    }
+  }catch(e){err('gmsErr','<b>'+e.message+'</b>');log('gms install: '+e,'bad');}
+  finally{refresh();}
+};
+
+$('bPhotos').onclick=async()=>{
+  clearErr('phErr'); $('bPhotos').disabled=true;
+  try{
+    $('phSt').textContent='installing…';
+    const r=await install($('fPhotos').files[0],'phBar','phSt');
+    if(r.ok){$('phSt').innerHTML='<span class="ok">installed</span>';go(6);}
+    else{
+      $('phSt').innerHTML='<span class="bad">failed</span>';
+      const dg=/DOWNGRADE|ALREADY_EXISTS|SIGNATURE/i.test(r.out);
+      err('phErr','<b>Install failed.</b> <code>'+(r.out||'no output')+'</code><br>'+
+        (dg?'Uninstall the existing Google Photos on the phone, then try again.':''));
+    }
+  }catch(e){err('phErr','<b>'+e.message+'</b>');log('photos install: '+e,'bad');}
+  finally{refresh();}
+};
+
+/* ---------------- step 6: capture ---------------- */
+const NEEDLE='auth%2Fphotos.native';
+function onLine(l){
+  lines++;
+  if(lines%1000===0)$('capSt').textContent=`listening… ${lines} lines scanned`;
+  if(!l.includes(NEEDLE))return;
+  const i=l.indexOf('androidId=');
+  if(i<0){log('matched but no androidId= on the line','warn');return;}
+  const tok=l.slice(i).trim();
+  $('token').textContent=tok;
+  $('capSt').innerHTML='<span class="ok">credential captured</span>';
+  log('auth_data captured ('+tok.length+' chars)','ok');
+  go(7);
+}
+
+async function launch(pkg,label){
+  // resolve the real launch activity; patched builds move things around
+  let comp='';
+  try{
+    const o=await sh(['cmd','package','resolve-activity','--brief',pkg]);
+    comp=o.split('\n').filter(Boolean).pop()||'';
+  }catch{}
+  try{
+    if(comp&&comp.includes('/')) await sh(['am','start','-n',comp]);
+    else await sh(['monkey','-p',pkg,'-c','android.intent.category.LAUNCHER','1']);
+    log('opened '+label+' on the phone','ok');
+  }catch(e){ log('could not open '+label+': '+e.message,'warn'); }
+}
+
+$('bListen').onclick=async()=>{
+  clearErr('capErr'); $('bListen').disabled=true; lines=0;
+  try{
+    proc=await adb.subprocess.noneProtocol.spawn(['logcat']);
+    $('capSt').textContent='listening…';
+    $('bOpenGms').disabled=false; $('bOpenPhotos').disabled=false;
+    log('listening for the credential — sign in on the phone now','acc');
+    await launch(PKG_GMS,'GmsCore');
+    const dec=new TextDecoder(); let buf='';
+    const r=proc.output.getReader();
+    for(;;){
+      const{done,value}=await r.read(); if(done)break;
+      buf+=dec.decode(value,{stream:true});
+      const parts=buf.split('\n'); buf=parts.pop();
+      parts.forEach(onLine);
+    }
+    log('listener stopped after '+lines+' lines');
+  }catch(e){
+    err('capErr','<b>Couldn\'t read the phone log.</b> <code>'+e.message+'</code>');
+    log('logcat: '+e,'bad'); $('bListen').disabled=false;
+  }
+};
+$('bOpenGms').onclick=()=>launch(PKG_GMS,'GmsCore');
+$('bOpenPhotos').onclick=()=>launch(PKG_PHOTOS,'Google Photos');
+
+/* ---------------- step 7 ---------------- */
+$('bCopy').onclick=async()=>{
+  await navigator.clipboard.writeText($('token').textContent);
+  log('copied to clipboard','ok');
+};
+$('bFinish').onclick=async()=>{
+  try{ await proc?.kill(); }catch{}
+  if(restoreVerify&&adb){
+    try{ await sh(['settings','put','global','verifier_verify_adb_installs','1']);
+         log('Play Protect USB-install scanning restored','ok'); restoreVerify=false; }
+    catch(e){ log('could not restore Play Protect setting: '+e.message,'warn'); }
+  }
+  $('bFinish').textContent='Done';
+};
+window.addEventListener('beforeunload',()=>{ if(restoreVerify&&adb)
+  navigator.sendBeacon?.(''); });
+</script>
+</body>
+</html>
