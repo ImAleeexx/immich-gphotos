@@ -62,6 +62,12 @@ services:
 docker compose up -d
 ```
 
+No `chown` first. The container starts as root purely to take ownership of the
+data directory — a bind-mounted `./data` arrives owned by whoever created it on
+the host, and Docker creates it as root when it doesn't exist yet — then drops
+to an unprivileged user before the app itself runs. Set `PUID`/`PGID` if you'd
+rather those files belonged to some other account.
+
 **3. Open `http://localhost:8080`** and set a password. The UI holds your Immich API key and your Google credential, so it isn't left open.
 
 **4. Walk through the wizard.** Four screens, and each one proves the thing works before storing anything.
@@ -178,6 +184,7 @@ All optional, all with working defaults, and **none of them ever carry a credent
 | `IGP_HOST` / `IGP_PORT` | `0.0.0.0` / `8080` | Listen address. |
 | `IGP_SCRATCH_DIR` | `<data>/scratch` | Where downloaded originals are staged. |
 | `IGP_ALLOW_DIRECT_READS` | `true` | Set `false` to always download through the Immich API. |
+| `PUID` / `PGID` | `1000` / `1000` | Which user owns the data directory and runs the app. |
 
 ## Monitoring
 

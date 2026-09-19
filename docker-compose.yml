@@ -8,6 +8,12 @@ services:
     environment:
       IGP_DATA_DIR: /data
       IGP_LOG_LEVEL: INFO
+      # The container takes ownership of ./data on boot and then drops to this
+      # user, so there is nothing to chown on the host. Change these only if
+      # you want the files owned by some other account (your own login, a NAS
+      # user) rather than uid 1000:
+      # PUID: "1000"
+      # PGID: "1000"
       # Uncomment to always download originals through the Immich API instead
       # of reading the mount below directly (e.g. to test the fallback, or if
       # the mount is present but shouldn't be trusted as the live library):
@@ -19,4 +25,4 @@ services:
       # at (originalPath is stored verbatim, so the path must match exactly),
       # originals are handed straight to the uploader instead of being
       # downloaded through the Immich API first.
-      - /path/to/immich/library:/usr/src/app/upload:ro
+#      - /path/to/immich/library:/usr/src/app/upload:ro

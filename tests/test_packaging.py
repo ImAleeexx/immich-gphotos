@@ -43,3 +43,12 @@ def test_static_assets_ship_in_the_wheel():
     pyproject = ROOT.joinpath("pyproject.toml").read_text()
     assert '"web/static/*"' in pyproject
     assert '"web/static/fonts/*"' in pyproject
+
+
+def test_the_image_starts_as_root_so_it_can_claim_a_bind_mounted_data_dir():
+    """The whole point of the entrypoint: `USER app` here would hand the
+    container to uid 1000 before anything could fix a root-owned ./data,
+    putting a host-side chown back on the user's critical path."""
+    dockerfile = ROOT.joinpath("docker/Dockerfile").read_text()
+    assert "\nUSER " not in dockerfile
+    assert "immich_gphotos.entrypoint" in dockerfile
