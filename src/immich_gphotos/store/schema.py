@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS asset (
   type              TEXT NOT NULL,
   size_bytes        INTEGER,
   immich_updated_at TEXT NOT NULL,
+  taken_at          TEXT,
   original_path     TEXT,
   visibility        TEXT NOT NULL,
   is_offline        INTEGER NOT NULL DEFAULT 0,
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS event (
 # missing, so re-opening an up-to-date database is a no-op.
 COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("asset", "bandwidth_deferred_at", "ALTER TABLE asset ADD COLUMN bandwidth_deferred_at TEXT"),
+    ("asset", "taken_at", "ALTER TABLE asset ADD COLUMN taken_at TEXT"),
 )
 
 

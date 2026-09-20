@@ -28,6 +28,7 @@ def payload(checksum) -> dict:
                 "originalFileName": "IMG_1.JPG",
                 "type": "IMAGE",
                 "updatedAt": "2026-09-17T10:00:00.000Z",
+                "fileCreatedAt": "2022-07-05T12:00:00.000Z",
                 "originalPath": "/data/upload/a1.jpg",
                 "visibility": "timeline",
                 "isOffline": False,
@@ -81,6 +82,15 @@ def test_asset_is_parsed_from_a_base64_checksum():
     assert asset.size_bytes == 4096
     assert asset.tags == ("holiday",)
     assert asset.is_trashed is False
+    # Carried so the uploaded file can be stamped with it; see
+    # `sync.bytes._stamp_capture_date`.
+    assert asset.taken_at == "2022-07-05T12:00:00.000Z"
+
+
+def test_an_asset_without_a_capture_date_is_still_parsed():
+    body = payload(B64)
+    del body["data"]["asset"]["fileCreatedAt"]
+    assert asset_from_webhook(body).taken_at is None
 
 
 def test_asset_is_parsed_from_a_buffer_shaped_checksum():

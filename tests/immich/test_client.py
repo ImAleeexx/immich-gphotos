@@ -73,6 +73,7 @@ def test_search_assets_maps_items_and_next_page():
                             "originalFileName": "IMG_0001.JPG",
                             "type": "IMAGE",
                             "updatedAt": "2026-09-17T10:00:00.000Z",
+                            "fileCreatedAt": "2022-07-05T12:00:00.000Z",
                             "originalPath": "/data/upload/a1.jpg",
                             "visibility": "timeline",
                             "isOffline": False,
@@ -90,6 +91,9 @@ def test_search_assets_maps_items_and_next_page():
     asset = page.assets[0]
     assert (asset.immich_id, asset.filename, asset.size_bytes) == ("a1", "IMG_0001.JPG", 2048)
     assert asset.tags == ("holiday",)
+    # `fileCreatedAt`, not `updatedAt`: this is what ends up as the uploaded
+    # file's mtime and therefore as the Google Photos capture date.
+    assert asset.taken_at == "2022-07-05T12:00:00.000Z"
 
 
 @respx.mock
@@ -254,3 +258,26 @@ def test_album_asset_ids_follows_every_page():
 
     assert client().album_asset_ids("alb-1") == ["a1", "a2"]
     assert route.call_count == 2
+
+
+@respx.mock
+def test_asset_taken_at_reads_file_created_at():
+    respx.get(f"{BASE}/api/assets/a1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "a1",
+                "fileCreatedAt": "2022-07-05T12:00:00.000Z",
+                "updatedAt": "2026-09-20T14:58:08.683Z",
+            },
+        )
+    )
+    # `fileCreatedAt`, never `updatedAt`: one is when the photo was taken, the
+    # other is when Immich last touched the row.
+    assert client().asset_taken_at("a1") == "2022-07-05T12:00:00.000Z"
+
+
+@respx.mock
+def test_asset_taken_at_is_none_when_immich_has_no_date():
+    respx.get(f"{BASE}/api/assets/a1").mock(return_value=httpx.Response(200, json={"id": "a1"}))
+    assert client().asset_taken_at("a1") is None

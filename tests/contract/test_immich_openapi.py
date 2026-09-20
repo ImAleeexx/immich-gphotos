@@ -26,6 +26,7 @@ def spec() -> dict:
         ("/api-keys/me", "get"),
         ("/plugins/methods", "get"),
         ("/search/metadata", "post"),
+        ("/assets/{id}", "get"),
         ("/assets/{id}/original", "get"),
         ("/albums", "get"),
         ("/albums/{id}", "get"),
@@ -58,6 +59,10 @@ def test_asset_response_fields_we_read(spec):
         "originalPath",
         "type",
         "updatedAt",
+        # When the photo was taken. Stamped onto the uploaded file's mtime,
+        # which is what Google Photos dates an asset by when its bytes carry
+        # no date of their own -- see `sync.bytes._stamp_capture_date`.
+        "fileCreatedAt",
         "visibility",
         "isOffline",
         "isTrashed",

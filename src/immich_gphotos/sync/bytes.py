@@ -1,9 +1,38 @@
+import logging
+import os
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from immich_gphotos.immich.protocol import ImmichClient
 from immich_gphotos.models import Asset
+
+logger = logging.getLogger(__name__)
+
+
+def _stamp_capture_date(path: Path, taken_at: str | None) -> None:
+    """Set `path`'s mtime to when the asset was actually taken.
+
+    gpmc uploads a file's `st_mtime` to Google as the capture timestamp, and
+    Google honours it for any file whose bytes carry no date of their own --
+    WhatsApp videos, screenshots, anything stripped of EXIF. Immich already
+    stores its own originals with the capture date as the mtime, so the
+    direct-read path was always correct; a file we download through the API
+    lands with an mtime of "now", which is what put those assets in Google
+    Photos dated today instead of when they were taken.
+
+    Best-effort by design: a missing, malformed or unrepresentable date leaves
+    the file alone and the asset still uploads, dated by Google as before. A
+    timestamp is never worth failing a backup over.
+    """
+    if not taken_at:
+        return
+    try:
+        when = datetime.fromisoformat(taken_at.replace("Z", "+00:00")).timestamp()
+        os.utime(path, (when, when))
+    except (ValueError, OSError, OverflowError) as exc:
+        logger.debug("could not stamp capture date %r onto %s: %s", taken_at, path.name, exc)
 
 
 @dataclass(frozen=True)
@@ -41,7 +70,32 @@ class ByteResolver:
         nonce = uuid.uuid4().hex
         dest = self._scratch / f"{asset.immich_id}-{nonce}-{Path(asset.filename).name}"
         self._immich.download_original(asset.immich_id, dest)
+        # Only ever the scratch copy: Immich's own originals already carry the
+        # right mtime and its library is mounted read-only.
+        _stamp_capture_date(dest, asset.taken_at or self._lookup_taken_at(asset))
         return ResolvedBytes(path=dest, temporary=True)
+
+    def _lookup_taken_at(self, asset: Asset) -> str | None:
+        """Ask Immich for a capture date the stored row does not have.
+
+        Only reached on the download path, and only for a row whose `taken_at`
+        is empty -- in practice one queued before that column existed. Those
+        rows are never re-read before the worker claims them (a reconcile or
+        backfill pass only refreshes what it happens to walk), so without this
+        the entire backlog present at upgrade time would upload dated today.
+        Steady-state rows already carry the date and never get here, so this
+        costs one extra request per legacy asset, once, against a download
+        that was already far more expensive.
+
+        Swallows everything: the bytes are on disk and the upload is the
+        valuable part, so a metadata call that fails costs the date, not the
+        backup.
+        """
+        try:
+            return self._immich.asset_taken_at(asset.immich_id)
+        except Exception as exc:  # noqa: BLE001 - a date is never worth failing a backup over
+            logger.debug("could not look up the capture date for %s: %s", asset.immich_id, exc)
+            return None
 
     def release(self, resolved: ResolvedBytes) -> None:
         if resolved.temporary:

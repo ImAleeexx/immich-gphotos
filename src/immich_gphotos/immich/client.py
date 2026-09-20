@@ -26,6 +26,7 @@ def _to_asset(item: dict[str, Any]) -> Asset:
         type=item.get("type", "IMAGE"),
         size_bytes=exif.get("fileSizeInByte"),
         immich_updated_at=item.get("updatedAt", ""),
+        taken_at=item.get("fileCreatedAt"),
         original_path=item.get("originalPath"),
         visibility=item.get("visibility", "timeline"),
         is_offline=bool(item.get("isOffline", False)),
@@ -119,6 +120,16 @@ class HttpImmichClient:
         except BaseException:
             tmp.unlink(missing_ok=True)
             raise
+
+    def asset_taken_at(self, asset_id: str) -> str | None:
+        """One asset's capture date (`fileCreatedAt`), or None if it has none.
+
+        Only `sync.bytes.ByteResolver` calls this, and only for a row whose
+        stored `taken_at` is empty -- rows queued before that column existed.
+        Every other path already carries the date from the search or webhook
+        payload that created the row, so this costs nothing in steady state.
+        """
+        return self._request("GET", f"/assets/{asset_id}").json().get("fileCreatedAt")
 
     def list_albums(self) -> list[ImmichAlbum]:
         return [

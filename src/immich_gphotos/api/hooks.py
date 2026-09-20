@@ -23,6 +23,7 @@ def asset_from_webhook(payload: dict) -> Asset:
             type=raw.get("type", "IMAGE"),
             size_bytes=exif.get("fileSizeInByte"),
             immich_updated_at=raw.get("updatedAt", ""),
+            taken_at=raw.get("fileCreatedAt"),
             original_path=raw.get("originalPath"),
             visibility=raw.get("visibility", "timeline"),
             is_offline=bool(raw.get("isOffline", False)),

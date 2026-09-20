@@ -16,6 +16,7 @@ class FakeImmichClient:
         permissions: set[str] | None = None,
         version: tuple[int, int, int] = (3, 2, 2),
         method_keys: set[str] | None = None,
+        taken_at: dict[str, str] | None = None,
     ) -> None:
         self.assets = assets or []
         self.contents = contents or {}
@@ -27,7 +28,9 @@ class FakeImmichClient:
         self.created_workflows: list[dict] = []
         self.deleted_workflows: list[str] = []
         self.searches: list[dict] = []
+        self.taken_at = taken_at or {}
         self.album_asset_ids_calls: list[str] = []
+        self.taken_at_calls: list[str] = []
 
     def server_version(self) -> tuple[int, int, int]:
         return self.version
@@ -59,6 +62,10 @@ class FakeImmichClient:
         self.downloads.append(asset_id)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(self.contents.get(asset_id, b"fake-bytes"))
+
+    def asset_taken_at(self, asset_id: str) -> str | None:
+        self.taken_at_calls.append(asset_id)
+        return self.taken_at.get(asset_id)
 
     def list_albums(self) -> list[ImmichAlbum]:
         return [ImmichAlbum(id=k, name=f"Album {k}", asset_count=len(v)) for k, v in self.albums.items()]

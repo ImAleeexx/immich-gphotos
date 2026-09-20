@@ -76,6 +76,14 @@ class Asset:
     is_offline: bool
     is_trashed: bool
     tags: tuple[str, ...] = ()
+    # Immich's `fileCreatedAt`: when the photo/video was taken, as opposed to
+    # `immich_updated_at`, which is when the row last changed. Carried purely
+    # so `sync.bytes.ByteResolver` can stamp it onto a downloaded scratch file
+    # -- gpmc reads the file's mtime and sends it to Google as the capture
+    # timestamp, which Google honours for any file whose bytes hold no date of
+    # their own. Optional: a webhook payload or an Immich version that omits
+    # the field simply leaves the upload undated, as before.
+    taken_at: str | None = None
 
 
 @dataclass(frozen=True)
