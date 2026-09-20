@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% set nav_active = "accounts" %}
+{% block page_title %}Accounts · immich-gphotos{% endblock %}
+{% block content %}
+<h1>Accounts</h1>
+<p>Every account this install mirrors, each with its own Immich library, its
+   own queue and its own background loop. Settings under "This account" on
+   the <a href="/settings">Settings</a> page follow whichever one is
+   selected in the switcher above; bandwidth and worker threads are shared
+   by all of them.</p>
+
+{% set state_tone = {"setup_needed": "pending", "paused": "danger", "syncing": "ok"} %}
+{% set state_label = {"setup_needed": "Setup needed", "paused": "Paused", "syncing": "Syncing"} %}
+
+<div class="panel">
+  <table class="table">
+    <thead>
+      <tr><th>Label</th><th>Immich host</th><th>State</th><th>Synced</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for account in accounts %}
+      <tr>
+        <td>
+          {{ account.label }}
+          {% if current_account and account.id == current_account.id %}
+          <span class="pill pill--ok">Current</span>
+          {% endif %}
+        </td>
+        <td>{{ account.immich_url or "—" }}</td>
+        <td>
+          <span class="pill pill--{{ state_tone.get(account.state, 'pending') }}">
+            {{ state_label.get(account.state, account.state) }}
+          </span>
+          {% if account.paused_reason %}
+          <p class="field__hint">{{ account.paused_reason }}</p>
+          {% endif %}
+        </td>
+        <td class="num">{{ account.synced }}</td>
+        <td>
+          <details class="remove-account" data-remove-account>
+            <summary class="btn btn--quiet btn--sm">Remove…</summary>
+            <div class="remove-account__panel">
+              <p>Removing an account stops its backups and forgets its queue. It does not delete anything from Google Photos.</p>
+              <label class="field">
+                <span class="field__label">Type "{{ account.label }}" to confirm</span>
+                <input type="text" class="input" autocomplete="off" spellcheck="false"
+                       data-confirm-input>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" class="switch" data-delete-data>
+                <span>Also delete this account's data on disk</span>
+              </label>
+              <button type="button" class="btn btn--danger" data-remove-submit
+                      data-account-id="{{ account.id }}" data-account-label="{{ account.label }}"
+                      disabled>
+                Remove account
+              </button>
+            </div>
+          </details>
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="5">
+          <div class="empty">
+            <p>No accounts yet.</p>
+            <p class="field__hint">Add one below to start mirroring a library.</p>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<section class="panel" style="margin-top: var(--space-5);">
+  <h2>Add an account</h2>
+  <p class="field__hint">Creates the account, selects it in the switcher above,
+     and opens the setup wizard for it.</p>
+  <form method="post" action="/accounts/add">
+    <label class="field">
+      <span class="field__label">Label</span>
+      <input type="text" name="label" class="input" required autocomplete="off">
+    </label>
+    <button type="submit" class="btn btn--primary">Add account</button>
+  </form>
+</section>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  document.querySelectorAll("[data-remove-account]").forEach((details) => {
+    const input = details.querySelector("[data-confirm-input]");
+    const deleteData = details.querySelector("[data-delete-data]");
+    const button = details.querySelector("[data-remove-submit]");
+    const accountId = button.dataset.accountId;
+    const accountLabel = button.dataset.accountLabel;
+
+    input.addEventListener("input", () => {
+      button.disabled = input.value !== accountLabel;
+    });
+
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        const response = await fetch(`/api/accounts/${encodeURIComponent(accountId)}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ confirm_label: input.value, delete_data: deleteData.checked }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          igp.toast((data && data.detail) || "Could not remove the account.", { tone: "danger" });
+          button.disabled = false;
+          return;
+        }
+        if (data.warning) {
+          igp.toast(data.warning, { tone: "warn" });
+        }
+        const row = details.closest("tr");
+        if (row) row.remove();
+      } catch (err) {
+        igp.toast("Could not remove the account.", { tone: "danger" });
+        button.disabled = false;
+      }
+    });
+  });
+});
+</script>
+{% endblock %}

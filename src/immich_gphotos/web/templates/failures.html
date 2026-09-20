@@ -2,7 +2,7 @@
 {% set nav_active = "failures" %}
 {% block page_title %}Failures · immich-gphotos{% endblock %}
 {% block content %}
-<h1>Failures</h1>
+<h1>Failures &mdash; {{ current_account.label }}</h1>
 <p>Assets that exhausted their retries during transfer. Retry one once the
    underlying problem is fixed.</p>
 <div class="panel">

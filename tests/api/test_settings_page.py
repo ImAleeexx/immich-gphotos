@@ -24,11 +24,31 @@ def test_settings_uses_neither_a_browser_prompt_nor_an_alert(http):
     assert "alert(" not in body
 
 
-def test_settings_groups_fields_into_transfer_and_scope_panels(http):
+def test_settings_groups_fields_by_account_scope(http):
+    """Task 9 replaced the old Transfer/Scope split (which mixed
+    account-scoped `quality` together with the two genuinely global knobs)
+    with two `<fieldset>`s that group by who a change actually affects:
+    "This account" (quality, albums, deletions) and "All accounts"
+    (bandwidth, worker threads) -- so the boundary in the UI matches the
+    boundary `accounts.build._merged_settings` already enforces server-side.
+    """
     body = http.get("/settings").text
     assert body.count('class="panel') == 2
-    assert "<h2>Transfer</h2>" in body
-    assert "<h2>Scope</h2>" in body
+    this_account = body.index("This account")
+    all_accounts = body.index("All accounts")
+    assert this_account < all_accounts
+
+    quality = body.index('name="quality"')
+    albums = body.index('name="albums_enabled"')
+    deletions = body.index('name="deletions_enabled"')
+    worker_threads = body.index('name="worker_threads"')
+    bandwidth = body.index('name="bandwidth_bytes_per_second"')
+
+    assert this_account < quality < all_accounts
+    assert this_account < albums < all_accounts
+    assert this_account < deletions < all_accounts
+    assert all_accounts < worker_threads
+    assert all_accounts < bandwidth
 
 
 def test_settings_uses_the_shared_confirmation_dialog_for_enabling_deletions(http):

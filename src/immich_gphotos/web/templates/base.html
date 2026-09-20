@@ -25,6 +25,21 @@
         <span>immich-gphotos</span>
       </a>
       {% if show_chrome | default(true) %}
+      <details class="switcher">
+        <summary class="switcher__current">{{ current_account.label if current_account else "No account" }}</summary>
+        <div class="switcher__menu">
+          {% for account in accounts %}
+          <form method="post" action="/accounts/select">
+            <input type="hidden" name="account_id" value="{{ account.id }}">
+            <button type="submit" class="switcher__item"
+                    {% if current_account and account.id == current_account.id %}aria-current="true"{% endif %}>
+              {{ account.label }}
+            </button>
+          </form>
+          {% endfor %}
+          <a class="switcher__item switcher__item--add" href="/accounts">+ Add account…</a>
+        </div>
+      </details>
       <nav class="nav" aria-label="Primary">
         {% set links = [
           ("dashboard", "/", "Dashboard"),

@@ -273,7 +273,15 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  document.getElementById("webhook_url").value = location.origin + "/hooks/immich";
+  // Account-scoped (Task 9): a workflow registered from any account other
+  // than the legacy/migrated one must point Immich at *this* account's
+  // queue, `/hooks/immich/{account_id}`, not the bare legacy path -- which
+  // `receive_legacy` (api/hooks.py) resolves only to the one account
+  // `LEGACY_WEBHOOK_ACCOUNT_KEY` names. `current_account` always exists
+  // here: the account-required gate in api/app.py redirects a zero-account
+  // browser away from /wizard before this template ever renders.
+  document.getElementById("webhook_url").value =
+    location.origin + "/hooks/immich/" + {{ current_account.id | tojson }};
 
   document.getElementById("immich-form").addEventListener("submit", async (event) => {
     event.preventDefault();

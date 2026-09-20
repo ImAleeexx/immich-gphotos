@@ -2,7 +2,7 @@
 {% set nav_active = "diagnostics" %}
 {% block page_title %}Diagnostics · immich-gphotos{% endblock %}
 {% block content %}
-<h1>Diagnostics</h1>
+<h1>Diagnostics &mdash; {{ current_account.label }}</h1>
 {% set level_tone = {"error": "danger", "warn": "warn", "info": "ok"} %}
 <section class="panel">
   <h2>Recent events</h2>

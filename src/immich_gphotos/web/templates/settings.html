@@ -4,8 +4,8 @@
 {% block content %}
 <h1>Settings</h1>
 <form id="settings-form" class="stagger">
-  <section class="panel" style="margin-bottom: var(--space-5);">
-    <h2>Transfer</h2>
+  <fieldset class="panel" style="margin-bottom: var(--space-5);">
+    <legend>This account{% if current_account %} &mdash; {{ current_account.label }}{% endif %}</legend>
     <label class="field">
       <span class="field__label">Quality</span>
       <select name="quality" class="input">
@@ -14,18 +14,6 @@
         <option value="quota">Quota-friendly</option>
       </select>
     </label>
-    <label class="field">
-      <span class="field__label">Worker threads</span>
-      <input class="input" type="number" name="worker_threads" min="1" max="16" inputmode="numeric">
-    </label>
-    <label class="field">
-      <span class="field__label">Bandwidth (bytes/sec, blank = unlimited, minimum 65536)</span>
-      <input type="number" name="bandwidth_bytes_per_second" min="65536" inputmode="numeric" class="input">
-    </label>
-  </section>
-
-  <section class="panel">
-    <h2>Scope</h2>
     <label class="field">
       <span class="field__label">Sync albums</span>
       <input type="checkbox" name="albums_enabled" class="switch">
@@ -40,7 +28,21 @@
         Google Photos to trash, where it stays recoverable for 60 days.</p>
       <p class="field__error" id="deletions-error" hidden></p>
     </div>
-  </section>
+  </fieldset>
+
+  <fieldset class="panel">
+    <legend>All accounts</legend>
+    <p class="field__hint">Applies to every account on this install, not just this one: the
+      uplink and the machine they share are the same regardless of which account is transferring.</p>
+    <label class="field">
+      <span class="field__label">Worker threads</span>
+      <input class="input" type="number" name="worker_threads" min="1" max="16" inputmode="numeric">
+    </label>
+    <label class="field">
+      <span class="field__label">Bandwidth (bytes/sec, blank = unlimited, minimum 65536)</span>
+      <input type="number" name="bandwidth_bytes_per_second" min="65536" inputmode="numeric" class="input">
+    </label>
+  </fieldset>
 
   <p class="field__error" id="form-error" hidden></p>
 

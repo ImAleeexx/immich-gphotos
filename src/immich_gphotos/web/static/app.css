@@ -1203,6 +1203,132 @@ textarea:focus {
   }
 }
 
+/* Account switcher (base.html) and the accounts page's per-row remove
+   disclosure -- both are native <details>/<summary>, so the marker every
+   browser draws in front of <summary> by default is suppressed once, here,
+   rather than per component. */
+summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Fieldsets (settings.html's "This account" / "All accounts" split) reuse
+   .panel for their surface -- the browser default fieldset border/padding
+   and the legend's own out-of-flow box would both fight that, so both are
+   normalized to plain block content here rather than per-page. */
+fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+legend {
+  display: block;
+  width: 100%;
+  padding: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.011em;
+  margin: 0 0 var(--space-3);
+}
+
+.switcher {
+  position: relative;
+}
+
+.switcher__current {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  transition: color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+}
+
+.switcher__current:hover {
+  color: var(--text);
+}
+
+.switcher[open] .switcher__current {
+  color: var(--text);
+  background: var(--accent-dim);
+}
+
+.switcher__menu {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  left: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  flex-direction: column;
+  min-width: 12rem;
+  padding: var(--space-2);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+
+.switcher__menu form {
+  margin: 0;
+}
+
+.switcher__item {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.switcher__item:hover {
+  background: var(--accent-dim);
+}
+
+.switcher__item[aria-current="true"] {
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.switcher__item--add {
+  color: var(--text-muted);
+  border-top: 1px solid var(--border-subtle);
+  margin-top: var(--space-1);
+  padding-top: var(--space-3);
+}
+
+/* Accounts page: the per-row "Remove..." disclosure. Sits inside a table
+   cell, so its panel stays in normal flow (grows the row) rather than
+   overlaying -- the switcher's absolute positioning would clip against the
+   table's own overflow in a way that's not worth fighting here. */
+.remove-account {
+  display: block;
+}
+
+.remove-account__panel {
+  margin-top: var(--space-3);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 26rem;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
 /* Reduced motion -- last in the file so it wins. */
 @media (prefers-reduced-motion: reduce) {
   *,
