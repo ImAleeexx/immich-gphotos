@@ -51,3 +51,12 @@ class Services:
     # read a stale bucket/gate off itself.
     bandwidth: Any = None  # sync.throttle.TokenBucket | None
     gate: Any = None  # AbstractContextManager[Any] | None, e.g. threading.Semaphore
+    # The sqlite connection every repo above shares (store.db.LockingConnection).
+    # Held here for exactly one caller: `AccountRegistry.remove`, which is the
+    # only place in the process that ever finishes with an account's database
+    # -- without a handle on it the connection (and, since `connect` opens in
+    # WAL mode, its -wal/-shm sidecars) leaked for the life of the process on
+    # every account removal, and the `rmtree` that follows would be deleting
+    # files still open. `None` for a hand-assembled `Services` in tests, which
+    # is why `remove` treats it as optional.
+    conn: Any = None  # sqlite3.Connection

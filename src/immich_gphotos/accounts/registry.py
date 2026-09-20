@@ -401,6 +401,22 @@ class AccountRegistry:
         raise there does not silently cancel a directory deletion the admin
         explicitly asked for.
 
+        The scope of that R14 guarantee is narrower than it reads, and this
+        is the honest statement of it: `_close_outgoing_immich_client` only
+        closes the client *inline* when the outgoing Runtime never built a
+        worker pool. Whenever `_pool is not None` -- i.e. whenever
+        `worker_threads > 1`, and the default is 2 -- it hands the close to a
+        short-lived daemon thread and returns immediately, so a raise from
+        that close happens on a thread this `except` cannot see and is logged
+        by the threading machinery instead of reaching the admin. The
+        "a close failure becomes a warning" promise therefore holds reliably
+        only in the single-worker case, which is also the only case the tests
+        exercise. That deferral exists for a real reason (see
+        `_close_outgoing_immich_client`: closing an httpx pool out from under
+        an in-flight request breaks that request), so this is documented
+        rather than restructured. `Runtime.close()` and the sqlite
+        `conn.close()` are both inline and are fully covered.
+
         Popping the account out of `self._accounts` up front (rather than
         only once the database row is dropped) is a separate, narrower
         thing: it stops `get`/`all`/`resolve_account` from finding this
@@ -450,17 +466,46 @@ class AccountRegistry:
                 )
 
         account.stop.set()
+        # `LoopsHandle.run_forever` only checks `stop` between iterations, and
+        # one iteration can contain a multi-minute upload, so this join is
+        # genuinely best effort -- see the `stopped` gate on the `rmtree`
+        # below for why that matters and what is done about it.
+        stopped = True
         if account.thread is not None:
             account.thread.join(timeout=5.0)
+            stopped = not account.thread.is_alive()
         try:
             close = getattr(account.services.runtime, "close", None)
             if close is not None:
                 close()
             _close_outgoing_immich_client(immich, getattr(account.services.runtime, "_pool", None))
+            # The account's sqlite connection, which nothing else in the
+            # process will ever use again. `_build` opened it (via
+            # `build_account_services`) and, before this, nobody ever closed
+            # it: every removal leaked one connection plus its WAL sidecars
+            # for the life of the container, and the `rmtree` just below was
+            # unlinking files this process still had open. Deliberately
+            # inside the same best-effort region as the two closes above so a
+            # failure here joins the same warning channel rather than turning
+            # an already-completed removal into a 500 (Ruling R14).
+            #
+            # Gated on `stopped` for a harder reason than tidiness: closing a
+            # `sqlite3.Connection` while another thread is inside an
+            # `execute()` on it segfaults CPython -- it is not a Python-level
+            # exception this `except` could absorb, it takes the whole
+            # container down. The two closes above tolerate that race by
+            # design (`Runtime.close` shuts down with `wait=False`, the
+            # client close defers itself); this one cannot, so when the loop
+            # thread did not stop the connection is left open and the process
+            # keeps the leak until restart. A leaked connection is strictly
+            # better than a signal 11.
+            conn = getattr(account.services, "conn", None) if stopped else None
+            if conn is not None:
+                conn.close()
         except Exception as exc:  # noqa: BLE001 - see Ruling R14 above
             close_warning = (
-                f"Removed the account, but closing its Immich connection failed ({exc}). "
-                "This is harmless -- nothing will use it again -- but the connection may "
+                f"Removed the account, but closing its connections failed ({exc}). "
+                "This is harmless -- nothing will use them again -- but they may "
                 "linger until the process restarts."
             )
             warning = f"{warning} {close_warning}" if warning else close_warning
@@ -469,5 +514,35 @@ class AccountRegistry:
             self.accounts_repo.remove(account_id)
         finally:
             if delete_data:
-                shutil.rmtree(account_dir(self._data_dir, account_id), ignore_errors=True)
+                if stopped:
+                    shutil.rmtree(account_dir(self._data_dir, account_id), ignore_errors=True)
+                else:
+                    # The loop thread is still running -- almost certainly
+                    # inside one long upload -- and it still holds this
+                    # account's database and scratch directory. Deleting the
+                    # tree out from under it does not do what it looks like
+                    # it does: on Linux the writer's writes go to an unlinked
+                    # inode and silently vanish, and `ByteResolver.resolve`
+                    # calls `mkdir(parents=True, exist_ok=True)` on every
+                    # single call, so the still-live loop *recreates*
+                    # accounts/<id>/scratch seconds after the admin ticked
+                    # "delete this account's data". On macOS and Windows the
+                    # unlink fails instead and `ignore_errors=True` swallows
+                    # it, so nothing is deleted and nothing says so. Either
+                    # way the admin is told something happened that did not.
+                    # So: don't delete, and say why. The account is already
+                    # gone from the registry and the control database, and
+                    # its thread will exit at the end of its current
+                    # iteration; the leftover directory is inert bytes from
+                    # that point on (the same leftover a crash mid-removal
+                    # leaves -- see the ordering discussion above).
+                    data_warning = (
+                        "Removed the account, but its data directory was NOT deleted: its "
+                        "background loop was still busy 5 seconds after being asked to stop "
+                        "(most likely mid-upload) and deleting files underneath it would "
+                        "either be silently undone or silently fail. Delete "
+                        f"{account_dir(self._data_dir, account_id)} by hand once the "
+                        "container has been restarted."
+                    )
+                    warning = f"{warning} {data_warning}" if warning else data_warning
         return warning

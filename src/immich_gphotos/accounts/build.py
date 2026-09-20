@@ -264,6 +264,7 @@ def build_account_services(
         allow_direct=allow_direct,
         bandwidth=bandwidth,
         gate=gate,
+        conn=conn,
     )
     loops_handle = LoopsHandle(loops)
     services.loops_handle = loops_handle

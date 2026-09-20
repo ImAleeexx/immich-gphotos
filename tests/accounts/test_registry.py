@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from immich_gphotos.accounts.control import CONTROL_DB_NAME
@@ -312,6 +314,90 @@ def test_remove_reports_both_a_workflow_and_a_close_failure_without_losing_eithe
     assert warning is not None
     assert "wf-1" in warning
     assert "socket already closed" in warning
+
+
+# --- FINDING I3: the connection `_build` opened, and an rmtree that could
+# race the account's own still-running loop thread. ------------------------
+
+
+def test_remove_closes_the_accounts_database_connection(tmp_path):
+    """`_build` opens one sqlite connection per account and nothing ever
+    closed it: every removal leaked that connection plus its WAL sidecars
+    for the life of the container, and the `rmtree` that follows was
+    unlinking files this process still had open."""
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+    conn = account.services.conn
+    assert conn is not None
+
+    registry.remove(account.id, delete_data=False)
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
+
+
+def test_remove_refuses_to_delete_data_under_a_loop_thread_that_would_not_stop(tmp_path):
+    """`thread.join(timeout=5.0)` is best effort: `LoopsHandle.run_forever`
+    only checks `stop` between iterations, and one iteration can contain a
+    multi-minute upload. Deleting the directory out from under that live
+    writer does not do what it looks like it does -- on Linux its writes go
+    to an unlinked inode and vanish, and `ByteResolver.resolve` mkdirs the
+    scratch directory on every call, so the still-running loop *recreates*
+    accounts/<id>/scratch right after the admin asked for it to be deleted;
+    on macOS/Windows the failed unlink is swallowed by `ignore_errors=True`
+    and nothing is deleted, silently. Either way the admin was told the data
+    was gone when it was not. So the delete is gated on the thread having
+    actually stopped, and a timed-out join returns a warning saying so."""
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+
+    class NeverStops:
+        """Stands in for a loop thread still inside a long upload."""
+
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):  # noqa: ANN001 - matches threading.Thread
+            return None
+
+    real_thread, account.thread = account.thread, NeverStops()
+
+    warning = registry.remove(account.id, delete_data=True)
+
+    assert warning is not None
+    assert "NOT deleted" in warning
+    assert str(account_dir(tmp_path, account.id)) in warning
+    assert account_dir(tmp_path, account.id).exists()
+    # The removal itself still completed: only the deletion was held back.
+    assert registry.get(account.id) is None
+    assert registry.accounts_repo.get(account.id) is None
+
+    real_thread.join(timeout=5.0)
+
+
+def test_remove_reports_both_a_workflow_failure_and_an_undeleted_directory(tmp_path):
+    """The R14 warning channel is append-only: an undeleted data directory
+    must not overwrite a workflow that could not be deleted either."""
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+    account.services.workflow_id = "wf-1"
+    account.services.immich = object()  # no delete_workflow -> warns
+
+    class NeverStops:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):  # noqa: ANN001 - matches threading.Thread
+            return None
+
+    real_thread, account.thread = account.thread, NeverStops()
+
+    warning = registry.remove(account.id, delete_data=True)
+
+    assert "wf-1" in warning
+    assert "NOT deleted" in warning
+
+    real_thread.join(timeout=5.0)
 
 
 def test_remove_lets_a_control_database_failure_propagate_but_still_deletes_the_directory(tmp_path):
