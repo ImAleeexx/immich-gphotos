@@ -203,6 +203,39 @@ def test_remove_reports_a_workflow_that_could_not_be_deleted(tmp_path):
     assert "wf-1" in warning
 
 
+def test_remove_deletes_the_workflow_in_immich_when_it_can(tmp_path):
+    """The success path alongside `test_remove_reports_a_workflow_that_could
+    _not_be_deleted` above: a working client actually gets asked to delete
+    the right workflow id, and a clean deletion reports no warning at all."""
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+    account.services.workflow_id = "wf-1"
+    fake_immich = account.services.immich  # FakeImmichClient: no Immich URL/key stored yet
+
+    warning = registry.remove(account.id, delete_data=False)
+
+    assert warning is None
+    assert fake_immich.deleted_workflows == ["wf-1"]
+
+
+def test_remove_reports_a_missing_workflow_client_rather_than_silently_skipping(tmp_path):
+    """`hasattr(immich, "delete_workflow")` guards `remove` against a test
+    double or a `None` client that predates the method -- but that guard
+    must not silently do nothing when a `workflow_id` was actually recorded:
+    a workflow may really still exist in Immich, and the whole point of the
+    warning mechanism is that a failure to clean it up is surfaced rather
+    than swallowed."""
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+    account.services.workflow_id = "wf-1"
+    account.services.immich = object()  # no delete_workflow at all
+
+    warning = registry.remove(account.id, delete_data=False)
+
+    assert warning is not None
+    assert "wf-1" in warning
+
+
 def test_create_gives_a_new_account_the_same_shared_bucket_and_gate_as_boot(tmp_path):
     """Pins the hazard called out in the task brief: `create` is a second
     construction path alongside `_load`, and if it ever stops routing

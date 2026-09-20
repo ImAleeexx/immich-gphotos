@@ -203,7 +203,19 @@ def _authenticated(registry):
 @pytest.fixture
 def http(rig_registry):
     """An authenticated TestClient over a fresh, unconfigured install."""
-    return _authenticated(rig_registry)
+    try:
+        yield _authenticated(rig_registry)
+    finally:
+        # Most tests using this fixture never touch a background thread at
+        # all (`rig_registry`'s one account is a hand-registered stub with
+        # `loops=None`, never started). But a test that calls
+        # `registry.create` (Task 8's `POST /api/accounts`) starts a real
+        # one via `AccountRegistry._start` -- `stop_all` is a no-op for the
+        # accounts that were never started, so calling it unconditionally
+        # here is free insurance against leaking that thread for the rest
+        # of the session (the same guard `two_account_http` above already
+        # needs for the same reason).
+        rig_registry.stop_all()
 
 
 @pytest.fixture
@@ -211,7 +223,13 @@ def empty_http(empty_registry):
     """An authenticated TestClient with zero accounts configured -- login
     itself is account-agnostic (Ruling R2), but every other route redirects
     or 409s once there is nothing to serve (Ruling R5)."""
-    return _authenticated(empty_registry)
+    try:
+        yield _authenticated(empty_registry)
+    finally:
+        # See `http`'s teardown just above: a test that calls
+        # `registry.create` against this empty registry starts a real
+        # background thread that nothing else here would ever stop.
+        empty_registry.stop_all()
 
 
 @pytest.fixture

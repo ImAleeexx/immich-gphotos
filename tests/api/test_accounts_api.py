@@ -23,14 +23,43 @@ def test_listing_accounts_never_reports_a_credential(two_account_http):
         assert set(account) == {"id", "label", "immich_url", "state", "synced", "paused_reason"}
 
 
-def test_creating_an_account_returns_its_id_and_selects_it(http):
+def test_creating_an_account_returns_its_id_and_it_is_listed(http):
+    """Ruling R13: `POST /api/accounts` stays JSON-only and does NOT select
+    the new account (no cookie is set here) -- that belongs to a page route
+    Task 9 adds (`POST /accounts/add`: create, set the cookie, 303 to
+    `/wizard`), the same split `/login`/`/logout`/`/accounts/select` already
+    follow between page form posts and `/api/*` JSON endpoints. A plain HTML
+    form with no JavaScript can only issue one POST, and a JSON 200 carrying
+    a cookie has nothing to redirect it, so selection-on-create cannot live
+    here."""
     created = http.post("/api/accounts", json={"label": "Dad"})
     assert created.status_code == 200
+    assert "id" in created.json()
     assert http.get("/api/accounts").json()[-1]["label"] == "Dad"
 
 
 def test_creating_an_account_requires_a_label(http):
     assert http.post("/api/accounts", json={"label": "   "}).status_code == 422
+
+
+def test_creating_an_account_still_requires_a_session(tmp_path):
+    """The `/api/accounts` exemption added to `api.app`'s account-required
+    gate (so the zero-account bootstrap case below can work) sits *below*
+    the session check in that middleware, not instead of it -- it only
+    skips the "no account configured" 409, never authentication itself. An
+    unauthenticated POST must still 401, whether or not any account exists
+    yet, the same as any other /api route."""
+    from fastapi.testclient import TestClient
+
+    from immich_gphotos.accounts.registry import AccountRegistry
+    from immich_gphotos.api.app import create_app
+    from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
+
+    registry = AccountRegistry(tmp_path / "no-session", env={})
+    registry.settings.set(PASSWORD_KEY, hash_password("test-password"))
+    client = TestClient(create_app(registry), follow_redirects=False)
+
+    assert client.post("/api/accounts", json={"label": "Nope"}).status_code == 401
 
 
 def test_creating_the_first_account_works_on_a_zero_account_install(empty_http):

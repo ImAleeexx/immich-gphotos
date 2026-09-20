@@ -40,6 +40,25 @@ def test_a_fresh_data_dir_has_nothing_to_adopt(tmp_path):
     assert not (tmp_path / CONTROL_DB_NAME).exists()
 
 
+@pytest.mark.parametrize("account_id", ["../escape", "a/b", "a\\b", "", "."])
+def test_account_dir_rejects_an_id_that_is_not_a_safe_path_segment(tmp_path, account_id):
+    """`account_dir` builds a filesystem path straight out of an account id
+    that, at the API boundary, comes off a URL path segment
+    (`DELETE /api/accounts/{id}`). Every current caller happens to check the
+    id against the registry first, but that is caller discipline, not a
+    property of this function -- so the guard belongs here, structurally,
+    rather than depending on every future caller remembering to check."""
+    with pytest.raises(ValueError):
+        account_dir(tmp_path, account_id)
+
+
+def test_account_dir_accepts_the_ids_this_project_actually_produces(tmp_path):
+    """Hex ids from `new_account_id()`, and the hand-written hyphenated ids
+    a lot of tests use ("acct-1", "acct-boot") must keep working."""
+    for account_id in ("a1b2c3d4e5f6", "acct-1", "acct-boot", "Default"):
+        assert account_dir(tmp_path, account_id) == tmp_path / ACCOUNTS_DIRNAME / account_id
+
+
 def test_a_v1_install_is_adopted_as_the_first_account(tmp_path):
     _legacy_install(tmp_path)
     account_id = ensure_control_db(tmp_path, now=NOW)

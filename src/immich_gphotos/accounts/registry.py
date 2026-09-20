@@ -355,24 +355,50 @@ class AccountRegistry:
         """Stop an account and forget it. Returns a warning to surface to the
         admin, or `None` when nothing went wrong.
 
-        Order matters here and is deliberate: stop the loop thread and join
-        it (so nothing is still calling into this account's clients), close
-        the `Runtime`'s worker pool, close the outgoing Immich client, THEN
-        drop the account from both the in-memory registry and the control
-        database, and only then -- optionally -- delete its directory.
-        Deleting the directory before the database row is dropped would let
-        a crash between the two leave a control-database row pointing at a
-        directory that no longer exists, which `_load` has no story for
-        recovering from; dropping the row first means a crash after it just
-        leaves an orphaned directory on disk, harmless clutter rather than a
-        boot-time crash.
+        Order matters here, but not for the reason it might look like at
+        first glance: dropping the control-database row before deleting the
+        directory does NOT protect against `_load` being unable to recover
+        from a crash between the two. `store.db.connect` (called from
+        `_build`) does `path.parent.mkdir(parents=True, exist_ok=True)`
+        before ever opening the database file, so a boot that finds a row
+        with no directory behind it does not crash at all -- it silently
+        recreates an empty directory and an empty database and the account
+        just comes back looking freshly created, data gone. (`create`
+        produces the mirror image of this exact state on every call, on
+        purpose: it commits the `accounts_repo.add` row before `_build` ever
+        creates the directory, so a `_build` failure there leaves precisely
+        a row with no directory yet -- recovered by `_load` the same way.
+        The two are not in tension; they are the same state reached from
+        opposite directions.)
+
+        The real reason to drop the row before the directory, then, is not
+        crash-safety -- both orders are equally recoverable -- it is which
+        leftover is less confusing to whoever finds it later. A crash after
+        the row is gone leaves orphaned bytes on disk that nothing ever
+        looks at again: inert clutter, cleaned up by hand whenever someone
+        notices. A crash after the directory is gone but before the row is
+        would instead resurrect an empty, freshly-"created" account at the
+        next boot, with no data and no error -- confusing for an admin who
+        watched it get removed. Between the two, "some orphaned bytes on
+        disk" is the strictly less surprising thing to leave behind, so the
+        row goes first.
+
+        Both drops (and the closes above them) happen inside one
+        `try`/`finally` pair, itself nested one level deeper for the
+        `delete_data` branch: a `Runtime.close()` or outgoing-client-close
+        that raises must not leave the control-database row behind (a
+        zombie account reappearing at the next boot, pointing at a
+        directory nothing else here knows is half torn down), and an
+        `accounts_repo.remove` that raises (e.g. a locked control database)
+        must not silently cancel an `rmtree` the admin explicitly asked for
+        by never reaching it.
 
         Popping the account out of `self._accounts` up front (rather than
-        only at the point the docstring above calls "drop from the registry")
-        is a separate, narrower thing: it stops `get`/`all`/`resolve_account`
-        from finding this account *the moment removal starts*, so a request
-        that arrives mid-teardown falls back to the default account instead
-        of touching a runtime that is in the middle of being torn down.
+        only once the database row is dropped) is a separate, narrower
+        thing: it stops `get`/`all`/`resolve_account` from finding this
+        account *the moment removal starts*, so a request that arrives
+        mid-teardown falls back to the default account instead of touching
+        a runtime that is in the middle of being torn down.
 
         Deleting the account's workflow inside Immich is best effort: a dead
         API key or an unreachable server must not block the removal (the
@@ -392,24 +418,41 @@ class AccountRegistry:
         warning = None
         workflow_id = account.services.workflow_id
         immich = account.services.immich
-        if workflow_id and immich is not None and hasattr(immich, "delete_workflow"):
-            try:
-                immich.delete_workflow(workflow_id)
-            except Exception as exc:  # noqa: BLE001 - best effort by design, see docstring
+        if workflow_id:
+            if immich is not None and hasattr(immich, "delete_workflow"):
+                try:
+                    immich.delete_workflow(workflow_id)
+                except Exception as exc:  # noqa: BLE001 - best effort by design, see docstring
+                    warning = (
+                        f"Could not delete workflow {workflow_id} in Immich ({exc}). "
+                        "Remove it there by hand, or it will keep firing into a rejected webhook."
+                    )
+            else:
+                # `ImmichClient` mandates `delete_workflow` now, so a real
+                # client (fake or HTTP) always has it -- this only fires for
+                # `immich is None` or a minimal hand-built test double that
+                # predates the method. Either way a `workflow_id` was
+                # recorded, so a workflow may genuinely still exist in
+                # Immich: warn exactly as a failed delete would rather than
+                # silently doing nothing, which is the one outcome the
+                # warning mechanism exists to prevent.
                 warning = (
-                    f"Could not delete workflow {workflow_id} in Immich ({exc}). "
+                    f"Could not delete workflow {workflow_id} in Immich (no client available). "
                     "Remove it there by hand, or it will keep firing into a rejected webhook."
                 )
 
         account.stop.set()
         if account.thread is not None:
             account.thread.join(timeout=5.0)
-        close = getattr(account.services.runtime, "close", None)
-        if close is not None:
-            close()
-        _close_outgoing_immich_client(immich, getattr(account.services.runtime, "_pool", None))
-
-        self.accounts_repo.remove(account_id)
-        if delete_data:
-            shutil.rmtree(account_dir(self._data_dir, account_id), ignore_errors=True)
+        try:
+            close = getattr(account.services.runtime, "close", None)
+            if close is not None:
+                close()
+            _close_outgoing_immich_client(immich, getattr(account.services.runtime, "_pool", None))
+        finally:
+            try:
+                self.accounts_repo.remove(account_id)
+            finally:
+                if delete_data:
+                    shutil.rmtree(account_dir(self._data_dir, account_id), ignore_errors=True)
         return warning

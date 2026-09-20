@@ -10,13 +10,13 @@ from fastapi.staticfiles import StaticFiles
 from immich_gphotos.accounts.registry import Account, AccountRegistry
 from immich_gphotos.api import auth, hooks, ops, pages, readiness, routes, stream, wizard
 
-# Re-exported so existing importers of this module (including tests/api/*)
-# keep working untouched -- see the constant's own docstring in
-# `storage_keys` for why it now lives there instead of here. Absent entirely
-# on a request (a client that never visited the account switcher, or
-# /api-only usage) simply means "the default account" -- see
-# `resolve_account`.
-from immich_gphotos.storage_keys import ACCOUNT_COOKIE  # noqa: F401
+# Used below by `resolve_account`, and also re-exported so existing
+# importers of this module (including tests/api/*) keep working untouched --
+# see the constant's own docstring in `storage_keys` for why it now lives
+# there instead of here. Absent entirely on a request (a client that never
+# visited the account switcher, or /api-only usage) simply means "the
+# default account" -- see `resolve_account`.
+from immich_gphotos.storage_keys import ACCOUNT_COOKIE
 
 STATIC_DIR = Path(__file__).parent.parent / "web" / "static"
 

@@ -16,6 +16,7 @@ a durable control.db to hold them; see the comment at that call.
 """
 
 import contextlib
+import re
 import shutil
 from pathlib import Path
 
@@ -39,8 +40,23 @@ LEGACY_DB_NAME = "immich-gphotos.db"
 ACCOUNTS_DIRNAME = "accounts"
 _CARRIED_TO_CONTROL = (PASSWORD_KEY, SESSION_COOKIE)
 
+# `new_account_id()` only ever hands out lowercase hex, but ids also come
+# from hand-written test fixtures ("acct-1", "acct-boot") and, at the API
+# boundary, straight off a URL path segment (`DELETE /api/accounts/{id}`) --
+# so this is deliberately a little wider than "hex" to keep those working,
+# not an attempt to describe every id this project has ever produced. What it
+# actually guards against is a `..` or a `/` reaching `shutil.rmtree` (see
+# `AccountRegistry.remove`) or a bare filesystem join anywhere else: every
+# caller of `account_dir` currently happens to check the id against the
+# registry first, but that is caller discipline, not a property of this
+# function -- and a directory-traversal id has no legitimate use, so it is
+# rejected here once rather than trusted wherever this is called from next.
+_SAFE_ACCOUNT_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+
 
 def account_dir(data_dir: Path, account_id: str) -> Path:
+    if not _SAFE_ACCOUNT_ID.fullmatch(account_id):
+        raise ValueError(f"unsafe account id: {account_id!r}")
     return Path(data_dir) / ACCOUNTS_DIRNAME / account_id
 
 
