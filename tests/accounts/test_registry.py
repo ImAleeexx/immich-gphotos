@@ -1,10 +1,12 @@
 import sqlite3
+import threading
+import time
 
 import pytest
 
 from immich_gphotos.accounts.control import CONTROL_DB_NAME
 from immich_gphotos.accounts.migrate import LEGACY_DB_NAME, account_dir
-from immich_gphotos.accounts.registry import AccountRegistry
+from immich_gphotos.accounts.registry import Account, AccountRegistry
 from immich_gphotos.config import Settings
 from immich_gphotos.immich.protocol import ImmichError
 from immich_gphotos.storage_keys import SECRET_KEY, SETTINGS_KEY
@@ -166,12 +168,20 @@ def test_remove_keeps_the_data_unless_asked_to_delete_it(tmp_path):
 
 
 def test_remove_leaves_a_dead_legacy_webhook_key_solvable_by_task_7(tmp_path):
-    """`LEGACY_WEBHOOK_ACCOUNT_KEY` (Task 7's problem, not this task's) must
-    not be left in a state Task 7 cannot recover from: `remove` does not
+    """`LEGACY_WEBHOOK_ACCOUNT_KEY` must not be left in a state
+    `/hooks/immich` cannot resolve deterministically: `remove` does not
     touch the key at all, so it keeps naming the id it always named --
-    now-dead, but still a real string a caller can look up and fall back
-    from, exactly the way `/hooks/immich` already falls back to
-    `registry.default()` when `registry.get(legacy_id)` is `None`."""
+    now-dead, but still a real string a caller can look up and decide about.
+
+    What `/hooks/immich` decides is a clean 401, not a fallback. RULING R15
+    is explicit that there is no `or registry.default()` there, for a dead
+    legacy id or an absent one: a fallback would manufacture a standing
+    alias from the bare path to whichever account happens to be first, which
+    silently retargets to a different library the moment that account is
+    removed. (An earlier version of this docstring claimed the opposite --
+    that the route "already falls back to registry.default()". It never did,
+    and asserting it here, in the file a reader consults to understand R15,
+    was worse than merely wrong. See `api.hooks.receive_legacy`.)"""
     from immich_gphotos.storage_keys import LEGACY_WEBHOOK_ACCOUNT_KEY
 
     registry = AccountRegistry(tmp_path, env={})
@@ -452,3 +462,100 @@ def test_create_gives_a_new_account_the_same_shared_bucket_and_gate_as_boot(tmp_
     assert created.services.bandwidth is not None
     assert created.services.gate is not None
     registry.stop_all()
+
+
+# --- FINDING I2: the registry had no lock, and finding M7: stop_all's
+# per-thread timeout. ------------------------------------------------------
+
+
+def test_create_cannot_interleave_with_a_global_cap_change(tmp_path, monkeypatch):
+    """FINDING I2. `create` reads `self._bandwidth`/`self._gate` inside
+    `_build` and registers the account only afterwards, while
+    `rebuild_shared_limiters` replaces both fields and then walks
+    `self.all()`. Interleaved across two request threads -- and uvicorn does
+    serve requests on a thread pool -- the account being created is built
+    against the old bucket and then missed by the walk that would have fixed
+    it, leaving one account metering against a bucket nobody else shares.
+    That is the R6 defect, reached by a race rather than by a forgotten
+    argument, and it is invisible: every account still has *a* bucket.
+
+    The build is stalled here at exactly the point the race needs, and a
+    second thread changes the global cap while it is stalled. With the lock
+    that thread waits; without it, it runs the walk before the new account
+    exists.
+    """
+    import immich_gphotos.accounts.registry as registry_module
+
+    registry = AccountRegistry(tmp_path, env={})
+    registry.create("Alex")
+
+    building = threading.Event()
+    release = threading.Event()
+    real_build = registry_module.build_account_services
+
+    def stalled_build(*args, **kwargs):
+        building.set()
+        release.wait(5.0)
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(registry_module, "build_account_services", stalled_build)
+
+    creator = threading.Thread(target=registry.create, args=("Mum",))
+    creator.start()
+    assert building.wait(5.0)
+
+    changer = threading.Thread(
+        target=registry.rebuild_shared_limiters, args=({"bandwidth_bytes_per_second": 1048576},)
+    )
+    changer.start()
+    # Long enough for the walk to have run if nothing were stopping it.
+    time.sleep(0.2)
+    release.set()
+    creator.join(timeout=5.0)
+    changer.join(timeout=5.0)
+
+    try:
+        buckets = {id(account.services.bandwidth) for account in registry.all()}
+        assert len(registry.all()) == 2
+        assert buckets == {id(registry._bandwidth)}
+        assert registry._bandwidth is not None
+    finally:
+        registry.stop_all()
+
+
+def test_stop_all_joins_every_thread_against_one_shared_deadline(tmp_path):
+    """FINDING M7. `timeout` is the budget for the whole shutdown, not for
+    each thread in turn: N x 5 s is past Docker's default 10 s stop grace
+    with three accounts, so `docker stop` would SIGKILL the container
+    mid-wind-down -- and the docstring's promise that the loops wind down in
+    parallel would be false."""
+    registry = AccountRegistry(tmp_path, env={})
+    requested = []
+
+    class SlowThread:
+        """A thread that takes 0.2 s to join however long it is given."""
+
+        def join(self, timeout=None):  # noqa: ANN001 - matches threading.Thread
+            requested.append(timeout)
+            time.sleep(0.2)
+
+        def is_alive(self):
+            return False
+
+    for account_id in ("acct-1", "acct-2", "acct-3"):
+        record = registry.accounts_repo.add(
+            account_id=account_id, label=account_id, created_at="2026-09-20T10:00:00Z"
+        )
+        registry.register(Account(record=record, services=None, loops=None, thread=SlowThread()))
+
+    started = time.monotonic()
+    registry.stop_all(timeout=0.5)
+    elapsed = time.monotonic() - started
+
+    assert len(requested) == 3
+    # Each join gets only what is left of the one deadline, never a fresh 0.5.
+    assert requested[0] > requested[1] > requested[2]
+    assert requested[2] < 0.2
+    # And the whole thing is bounded by the deadline plus the last join's own
+    # work, not by 3 x 0.5.
+    assert elapsed < 1.0

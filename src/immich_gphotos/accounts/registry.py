@@ -11,6 +11,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -65,6 +66,29 @@ class AccountRegistry:
     `configure_logging` is called exactly once, here, with the one instance
     every account's `build_account_services` call then grows via
     `add_secret` rather than replacing.
+
+    FINDING I2 -- `self._lock` serializes the four methods that mutate the
+    account set or the shared limiters: `create`, `remove`,
+    `rebuild_shared_limiters` and `apply_global_settings`. uvicorn serves
+    requests on a thread pool, so two admin actions genuinely do run at once
+    here, and the interleaving is not benign: `create` reads
+    `self._bandwidth`/`self._gate` inside `_build` and only registers the
+    account afterwards, while `rebuild_shared_limiters` replaces both fields
+    and then walks `self.all()`. Interleaved, the new account is built
+    against the old bucket, then missed by the walk that would have fixed it
+    -- one account metering against a bucket nobody else shares, which is
+    exactly the R6 defect, reached by a race instead of by a missing
+    argument. `remove` has the same shape against the same walk.
+
+    It is an `RLock` because `apply_global_settings` calls
+    `rebuild_shared_limiters`, so the lock is genuinely re-entered.
+
+    On deadlock: these methods take this lock first and only then take a
+    database connection's own lock (`store.db.LockingConnection.lock`), via
+    `accounts_repo`/`settings` or via a rebuild. Nothing anywhere takes them
+    in the other order -- the store layer knows nothing about the registry
+    -- so there is no cycle to close. Keep it that way: do not call into the
+    registry from anything already holding a connection lock.
     """
 
     def __init__(
@@ -96,6 +120,11 @@ class AccountRegistry:
         # sync with a changed global setting.
         self._bandwidth: TokenBucket | None = None
         self._gate: threading.Semaphore | None = None
+        # See the class docstring (finding I2) for what this serializes and
+        # why it cannot deadlock against the connection locks underneath it.
+        # `_load` runs before anything else can reach this object, so it
+        # needs no lock of its own.
+        self._lock = threading.RLock()
         self._load()
 
     def _build_limiters(self, stored_global: object) -> tuple[TokenBucket | None, threading.Semaphore]:
@@ -232,6 +261,16 @@ class AccountRegistry:
         -- rather than this method blocking on account 1's `timeout` before
         even telling account 2 to stop.
 
+        FINDING M7: `timeout` is a deadline for the whole method, not a
+        per-thread budget. Joining each thread for a fresh `timeout` seconds
+        made the worst case N x timeout -- 15 seconds with three accounts,
+        past Docker's default 10-second stop grace, so `docker stop` would
+        SIGKILL the container mid-shutdown and the parallel wind-down this
+        docstring promises would not have been true. Each join now gets only
+        whatever is left of the one deadline, and a deadline already blown
+        joins with 0 (a poll: it reaps a thread that has already finished
+        and moves straight on to the next).
+
         `account.thread` is left set to the now-finished `Thread` rather than
         reset to `None`: callers (and tests) that already hold a reference to
         the `Account` -- `registry.default()` returns the same object stored
@@ -239,9 +278,10 @@ class AccountRegistry:
         """
         for account in self.all():
             account.stop.set()
+        deadline = time.monotonic() + timeout
         for account in self.all():
             if account.thread is not None:
-                account.thread.join(timeout=timeout)
+                account.thread.join(timeout=max(0.0, deadline - time.monotonic()))
 
     def rebuild_shared_limiters(self, updates: dict) -> None:
         """Rebuild whichever shared limiter(s) `updates` actually touches, and
@@ -281,15 +321,18 @@ class AccountRegistry:
         already queued on the old `Semaphore`) on a save that never touched
         it.
         """
-        if "bandwidth_bytes_per_second" in updates:
-            rate = _validated("bandwidth_bytes_per_second", updates.get("bandwidth_bytes_per_second"))
-            self._bandwidth = TokenBucket(rate, self._clock) if rate is not None else None
-        if "worker_threads" in updates:
-            threads = _validated("worker_threads", updates.get("worker_threads"))
-            self._gate = threading.Semaphore(threads if threads is not None else Settings().worker_threads)
-        for account in self.all():
-            account.services.bandwidth = self._bandwidth
-            account.services.gate = self._gate
+        with self._lock:
+            if "bandwidth_bytes_per_second" in updates:
+                rate = _validated("bandwidth_bytes_per_second", updates.get("bandwidth_bytes_per_second"))
+                self._bandwidth = TokenBucket(rate, self._clock) if rate is not None else None
+            if "worker_threads" in updates:
+                threads = _validated("worker_threads", updates.get("worker_threads"))
+                self._gate = threading.Semaphore(
+                    threads if threads is not None else Settings().worker_threads
+                )
+            for account in self.all():
+                account.services.bandwidth = self._bandwidth
+                account.services.gate = self._gate
 
     def apply_global_settings(self, updates: dict) -> None:
         """Rebuild every account's graph against a changed global setting.
@@ -312,9 +355,10 @@ class AccountRegistry:
         a single account's own settings save, just repeated once per account
         here.
         """
-        self.rebuild_shared_limiters(updates)
-        for account in self.all():
-            rebuild_runtime(account.services, settings=replace(account.services.settings, **updates))
+        with self._lock:
+            self.rebuild_shared_limiters(updates)
+            for account in self.all():
+                rebuild_runtime(account.services, settings=replace(account.services.settings, **updates))
 
     def create(self, label: str) -> Account:
         """Add a new account: a control-database row, its own on-disk
@@ -342,14 +386,15 @@ class AccountRegistry:
         effect (see Ruling R9's "skip if already started" guard, which
         `start_all` still relies on for the boot-time case).
         """
-        record = self.accounts_repo.add(
-            account_id=new_account_id(), label=label, created_at=self._clock.now().isoformat()
-        )
-        services, loops = self._build(record)
-        account = Account(record=record, services=services, loops=loops)
-        self.register(account)
-        self._start(account)
-        return account
+        with self._lock:
+            record = self.accounts_repo.add(
+                account_id=new_account_id(), label=label, created_at=self._clock.now().isoformat()
+            )
+            services, loops = self._build(record)
+            account = Account(record=record, services=services, loops=loops)
+            self.register(account)
+            self._start(account)
+            return account
 
     def remove(self, account_id: str, *, delete_data: bool) -> str | None:
         """Stop an account and forget it. Returns a warning to surface to the
@@ -435,114 +480,120 @@ class AccountRegistry:
         (see the task brief) -- there is no "best effort" version of that,
         because there is no version of that at all.
         """
-        account = self._accounts.pop(account_id, None)
-        if account is None:
-            return None
+        with self._lock:
+            # Held across the join (finding I2). That can block a
+            # concurrent `create` for the join's 5 seconds, which is the
+            # correct trade: the alternative is a `create` landing in the
+            # middle of this teardown and building its graph against
+            # limiters this method is about to walk past.
+            account = self._accounts.pop(account_id, None)
+            if account is None:
+                return None
 
-        warning = None
-        workflow_id = account.services.workflow_id
-        immich = account.services.immich
-        if workflow_id:
-            if immich is not None and hasattr(immich, "delete_workflow"):
-                try:
-                    immich.delete_workflow(workflow_id)
-                except Exception as exc:  # noqa: BLE001 - best effort by design, see docstring
+            warning = None
+            workflow_id = account.services.workflow_id
+            immich = account.services.immich
+            if workflow_id:
+                if immich is not None and hasattr(immich, "delete_workflow"):
+                    try:
+                        immich.delete_workflow(workflow_id)
+                    except Exception as exc:  # noqa: BLE001 - best effort by design, see docstring
+                        warning = (
+                            f"Could not delete workflow {workflow_id} in Immich ({exc}). "
+                            "Remove it there by hand, or it will keep firing into a rejected webhook."
+                        )
+                else:
+                    # `ImmichClient` mandates `delete_workflow` now, so a real
+                    # client (fake or HTTP) always has it -- this only fires for
+                    # `immich is None` or a minimal hand-built test double that
+                    # predates the method. Either way a `workflow_id` was
+                    # recorded, so a workflow may genuinely still exist in
+                    # Immich: warn exactly as a failed delete would rather than
+                    # silently doing nothing, which is the one outcome the
+                    # warning mechanism exists to prevent.
                     warning = (
-                        f"Could not delete workflow {workflow_id} in Immich ({exc}). "
+                        f"Could not delete workflow {workflow_id} in Immich (no client available). "
                         "Remove it there by hand, or it will keep firing into a rejected webhook."
                     )
-            else:
-                # `ImmichClient` mandates `delete_workflow` now, so a real
-                # client (fake or HTTP) always has it -- this only fires for
-                # `immich is None` or a minimal hand-built test double that
-                # predates the method. Either way a `workflow_id` was
-                # recorded, so a workflow may genuinely still exist in
-                # Immich: warn exactly as a failed delete would rather than
-                # silently doing nothing, which is the one outcome the
-                # warning mechanism exists to prevent.
-                warning = (
-                    f"Could not delete workflow {workflow_id} in Immich (no client available). "
-                    "Remove it there by hand, or it will keep firing into a rejected webhook."
+
+            account.stop.set()
+            # `LoopsHandle.run_forever` only checks `stop` between iterations, and
+            # one iteration can contain a multi-minute upload, so this join is
+            # genuinely best effort -- see the `stopped` gate on the `rmtree`
+            # below for why that matters and what is done about it.
+            stopped = True
+            if account.thread is not None:
+                account.thread.join(timeout=5.0)
+                stopped = not account.thread.is_alive()
+            try:
+                close = getattr(account.services.runtime, "close", None)
+                if close is not None:
+                    close()
+                _close_outgoing_immich_client(immich, getattr(account.services.runtime, "_pool", None))
+                # The account's sqlite connection, which nothing else in the
+                # process will ever use again. `_build` opened it (via
+                # `build_account_services`) and, before this, nobody ever closed
+                # it: every removal leaked one connection plus its WAL sidecars
+                # for the life of the container, and the `rmtree` just below was
+                # unlinking files this process still had open. Deliberately
+                # inside the same best-effort region as the two closes above so a
+                # failure here joins the same warning channel rather than turning
+                # an already-completed removal into a 500 (Ruling R14).
+                #
+                # Gated on `stopped` for a harder reason than tidiness: closing a
+                # `sqlite3.Connection` while another thread is inside an
+                # `execute()` on it segfaults CPython -- it is not a Python-level
+                # exception this `except` could absorb, it takes the whole
+                # container down. The two closes above tolerate that race by
+                # design (`Runtime.close` shuts down with `wait=False`, the
+                # client close defers itself); this one cannot, so when the loop
+                # thread did not stop the connection is left open and the process
+                # keeps the leak until restart. A leaked connection is strictly
+                # better than a signal 11.
+                conn = getattr(account.services, "conn", None) if stopped else None
+                if conn is not None:
+                    conn.close()
+            except Exception as exc:  # noqa: BLE001 - see Ruling R14 above
+                close_warning = (
+                    f"Removed the account, but closing its connections failed ({exc}). "
+                    "This is harmless -- nothing will use them again -- but they may "
+                    "linger until the process restarts."
                 )
+                warning = f"{warning} {close_warning}" if warning else close_warning
 
-        account.stop.set()
-        # `LoopsHandle.run_forever` only checks `stop` between iterations, and
-        # one iteration can contain a multi-minute upload, so this join is
-        # genuinely best effort -- see the `stopped` gate on the `rmtree`
-        # below for why that matters and what is done about it.
-        stopped = True
-        if account.thread is not None:
-            account.thread.join(timeout=5.0)
-            stopped = not account.thread.is_alive()
-        try:
-            close = getattr(account.services.runtime, "close", None)
-            if close is not None:
-                close()
-            _close_outgoing_immich_client(immich, getattr(account.services.runtime, "_pool", None))
-            # The account's sqlite connection, which nothing else in the
-            # process will ever use again. `_build` opened it (via
-            # `build_account_services`) and, before this, nobody ever closed
-            # it: every removal leaked one connection plus its WAL sidecars
-            # for the life of the container, and the `rmtree` just below was
-            # unlinking files this process still had open. Deliberately
-            # inside the same best-effort region as the two closes above so a
-            # failure here joins the same warning channel rather than turning
-            # an already-completed removal into a 500 (Ruling R14).
-            #
-            # Gated on `stopped` for a harder reason than tidiness: closing a
-            # `sqlite3.Connection` while another thread is inside an
-            # `execute()` on it segfaults CPython -- it is not a Python-level
-            # exception this `except` could absorb, it takes the whole
-            # container down. The two closes above tolerate that race by
-            # design (`Runtime.close` shuts down with `wait=False`, the
-            # client close defers itself); this one cannot, so when the loop
-            # thread did not stop the connection is left open and the process
-            # keeps the leak until restart. A leaked connection is strictly
-            # better than a signal 11.
-            conn = getattr(account.services, "conn", None) if stopped else None
-            if conn is not None:
-                conn.close()
-        except Exception as exc:  # noqa: BLE001 - see Ruling R14 above
-            close_warning = (
-                f"Removed the account, but closing its connections failed ({exc}). "
-                "This is harmless -- nothing will use them again -- but they may "
-                "linger until the process restarts."
-            )
-            warning = f"{warning} {close_warning}" if warning else close_warning
-
-        try:
-            self.accounts_repo.remove(account_id)
-        finally:
-            if delete_data:
-                if stopped:
-                    shutil.rmtree(account_dir(self._data_dir, account_id), ignore_errors=True)
-                else:
-                    # The loop thread is still running -- almost certainly
-                    # inside one long upload -- and it still holds this
-                    # account's database and scratch directory. Deleting the
-                    # tree out from under it does not do what it looks like
-                    # it does: on Linux the writer's writes go to an unlinked
-                    # inode and silently vanish, and `ByteResolver.resolve`
-                    # calls `mkdir(parents=True, exist_ok=True)` on every
-                    # single call, so the still-live loop *recreates*
-                    # accounts/<id>/scratch seconds after the admin ticked
-                    # "delete this account's data". On macOS and Windows the
-                    # unlink fails instead and `ignore_errors=True` swallows
-                    # it, so nothing is deleted and nothing says so. Either
-                    # way the admin is told something happened that did not.
-                    # So: don't delete, and say why. The account is already
-                    # gone from the registry and the control database, and
-                    # its thread will exit at the end of its current
-                    # iteration; the leftover directory is inert bytes from
-                    # that point on (the same leftover a crash mid-removal
-                    # leaves -- see the ordering discussion above).
-                    data_warning = (
-                        "Removed the account, but its data directory was NOT deleted: its "
-                        "background loop was still busy 5 seconds after being asked to stop "
-                        "(most likely mid-upload) and deleting files underneath it would "
-                        "either be silently undone or silently fail. Delete "
-                        f"{account_dir(self._data_dir, account_id)} by hand once the "
-                        "container has been restarted."
-                    )
-                    warning = f"{warning} {data_warning}" if warning else data_warning
-        return warning
+            try:
+                self.accounts_repo.remove(account_id)
+            finally:
+                if delete_data:
+                    if stopped:
+                        shutil.rmtree(account_dir(self._data_dir, account_id), ignore_errors=True)
+                    else:
+                        # The loop thread is still running -- almost certainly
+                        # inside one long upload -- and it still holds this
+                        # account's database and scratch directory. Deleting the
+                        # tree out from under it does not do what it looks like
+                        # it does: on Linux the writer's writes go to an unlinked
+                        # inode and silently vanish, and `ByteResolver.resolve`
+                        # calls `mkdir(parents=True, exist_ok=True)` on every
+                        # single call, so the still-live loop *recreates*
+                        # accounts/<id>/scratch seconds after the admin ticked
+                        # "delete this account's data". On macOS and Windows the
+                        # unlink fails instead and `ignore_errors=True` swallows
+                        # it, so nothing is deleted and nothing says so. Either
+                        # way the admin is told something happened that did not.
+                        # So: don't delete, and say why. The account is already
+                        # gone from the registry and the control database, and
+                        # its thread will exit at the end of its current
+                        # iteration; the leftover directory is inert bytes from
+                        # that point on (the same leftover a crash mid-removal
+                        # leaves -- see the ordering discussion above).
+                        data_warning = (
+                            "Removed the account, but its data directory was NOT deleted: its "
+                            "background loop was still busy 5 seconds after being asked to stop "
+                            "(most likely mid-upload) and deleting files underneath it would "
+                            "either be silently undone or silently fail. Delete "
+                            f"{account_dir(self._data_dir, account_id)} by hand once the "
+                            "container has been restarted."
+                        )
+                        warning = f"{warning} {data_warning}" if warning else data_warning
+            return warning
