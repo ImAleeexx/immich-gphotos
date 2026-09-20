@@ -105,7 +105,17 @@ def ensure_control_db(data_dir: Path, *, now: str) -> str | None:
     primary = adopted or account_ids[0]
 
     tmp = data_dir / f"{CONTROL_DB_NAME}.tmp"
-    tmp.unlink(missing_ok=True)
+    # FINDING M2: the sidecars go too, not just the main file. `connect_control`
+    # opens in WAL mode, so a previous run that died before the rename can leave
+    # `control.db.tmp-wal` (and `-shm`) behind. Unlinking only `control.db.tmp`
+    # and then opening a fresh database at that same path hands SQLite a brand
+    # new main file next to someone else's write-ahead log, which it will
+    # happily recover *into* the new database -- rows from a half-finished
+    # earlier attempt appearing in what is about to become the real control
+    # database. This is the one irreversible path in the design (`tmp.replace`
+    # below is the commit point), so it starts from nothing at all.
+    for path in (tmp, *(data_dir.glob(f"{CONTROL_DB_NAME}.tmp-*"))):
+        path.unlink(missing_ok=True)
     control_conn = connect_control(tmp)
     accounts = AccountRepo(control_conn)
     control = SettingRepo(control_conn)
@@ -135,7 +145,35 @@ def ensure_control_db(data_dir: Path, *, now: str) -> str | None:
             control.set(SETTINGS_KEY, {k: v for k, v in stored.items() if k in GLOBAL_SETTING_KEYS})
             account_settings = {k: v for k, v in stored.items() if k not in GLOBAL_SETTING_KEYS}
 
-        control.set(LEGACY_WEBHOOK_ACCOUNT_KEY, primary)
+        # FINDING M1: only when a legacy database was actually adopted by
+        # *this* call. This key means "the account that a pre-multi-account
+        # workflow, already registered inside someone's Immich against the
+        # bare /hooks/immich path, belongs to". `adopted` is the only
+        # evidence that such a workflow can exist: it is set exactly when
+        # this call found /data/immich-gphotos.db and moved it into an
+        # account directory.
+        #
+        # Writing it unconditionally also covered the recovery path, where
+        # nothing was adopted and `primary` is merely `account_ids[0]` --
+        # e.g. a v2 install whose control.db was lost or deleted, with three
+        # account directories still on disk. That manufactured precisely the
+        # standing alias from the bare path to "whichever account sorts
+        # first" that Ruling R15 rejects, for an install that never had a
+        # legacy workflow at all; and it silently retargets to a different
+        # library the moment that account is removed. `receive_legacy` 401s
+        # on an unset key by design, which is the correct answer there.
+        #
+        # The trade: a v1 migration that crashed in the microseconds between
+        # `shutil.move` and `tmp.replace` replays with `adopted` None (the
+        # legacy file is already gone), so its legacy binding is not
+        # restored and that person re-registers the workflow from the
+        # wizard. Nothing on disk distinguishes that replay from the
+        # lost-control.db case above, and between "a rare crash costs one
+        # re-registration, visibly" and "an alias nothing asked for, on
+        # every install that loses control.db, silently", the first is the
+        # better failure.
+        if adopted is not None:
+            control.set(LEGACY_WEBHOOK_ACCOUNT_KEY, primary)
         control_conn.close()
         # The commit point. Everything above is replayable; this is not.
         tmp.replace(data_dir / CONTROL_DB_NAME)

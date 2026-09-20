@@ -205,3 +205,70 @@ def test_the_wal_sidecars_travel_with_the_database(tmp_path):
     assert not list(tmp_path.glob("immich-gphotos.db-*"))
     moved = SettingRepo(connect(account_dir(tmp_path, account_id) / LEGACY_DB_NAME))
     assert moved.get("keep") == "me"
+
+
+def test_a_recovery_with_nothing_adopted_does_not_bind_the_legacy_webhook_path(tmp_path):
+    """FINDING M1. `LEGACY_WEBHOOK_ACCOUNT_KEY` means "the account a
+    pre-multi-account workflow, already registered inside someone's Immich
+    against the bare /hooks/immich path, belongs to". The only evidence such
+    a workflow can exist is that this call actually adopted
+    /data/immich-gphotos.db.
+
+    Setting it unconditionally also covered the recovery path -- here, a v2
+    install whose control.db was lost, with account directories still on
+    disk and nothing to adopt -- where `primary` is merely `account_ids[0]`.
+    That manufactures exactly the standing alias from the bare path to
+    "whichever account sorts first" that Ruling R15 rejects, on an install
+    that never had a legacy workflow at all, and it silently retargets to a
+    different library the moment that account is removed.
+    """
+    for account_id in ("acct-b", "acct-a"):
+        target = account_dir(tmp_path, account_id)
+        target.mkdir(parents=True, exist_ok=True)
+        SettingRepo(connect(target / LEGACY_DB_NAME)).set(SETTINGS_KEY, {"quality": "saver"})
+
+    assert ensure_control_db(tmp_path, now=NOW) == "acct-a"  # sorted first, still the "Default"
+
+    control = SettingRepo(connect_control(tmp_path / CONTROL_DB_NAME))
+    assert control.get(LEGACY_WEBHOOK_ACCOUNT_KEY) is None
+
+
+def test_an_adopted_v1_install_still_binds_the_legacy_webhook_path(tmp_path):
+    """The other half of M1: the case the key exists for must keep working
+    -- a real v1 database, adopted by this call, is what `/hooks/immich`
+    stays pointed at forever."""
+    _legacy_install(tmp_path)
+
+    adopted = ensure_control_db(tmp_path, now=NOW)
+
+    control = SettingRepo(connect_control(tmp_path / CONTROL_DB_NAME))
+    assert control.get(LEGACY_WEBHOOK_ACCOUNT_KEY) == adopted
+
+
+def test_a_crashed_earlier_attempts_leftovers_never_reach_the_control_database(tmp_path):
+    """FINDING M2. `connect_control` opens in WAL mode, so an attempt that
+    died before the rename can leave `control.db.tmp-wal`/`-shm` beside the
+    tmp database. Clearing only `control.db.tmp` and then creating a fresh
+    database at that same path leaves those sidecars sitting next to it --
+    the one irreversible path in the design, starting from someone else's
+    leftovers. Nothing from a previous attempt may appear in the committed
+    control database, and nothing may be left behind beside it.
+    """
+    tmp = tmp_path / f"{CONTROL_DB_NAME}.tmp"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    ghost_conn = connect_control(tmp)
+    AccountRepo(ghost_conn).add(account_id="ghost", label="Ghost", created_at=NOW)
+    # The sidecars exactly as a kill -9 mid-attempt would leave them.
+    sidecars = {path.name: path.read_bytes() for path in tmp_path.glob(f"{CONTROL_DB_NAME}.tmp-*")}
+    assert sidecars
+    ghost_conn.close()
+    tmp.unlink(missing_ok=True)
+    for name, blob in sidecars.items():
+        (tmp_path / name).write_bytes(blob)
+
+    _legacy_install(tmp_path)
+    adopted = ensure_control_db(tmp_path, now=NOW)
+
+    control_conn = connect_control(tmp_path / CONTROL_DB_NAME)
+    assert [record.id for record in AccountRepo(control_conn).list()] == [adopted]
+    assert list(tmp_path.glob(f"{CONTROL_DB_NAME}.tmp*")) == []
