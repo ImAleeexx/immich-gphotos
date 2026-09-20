@@ -30,8 +30,8 @@ router = APIRouter(prefix="/api")
 CheckState = Literal["ok", "pending", "attention"]
 Overall = Literal["needs_setup", "attention", "ready"]
 
-# Credentials alone are not enough: main.build_services falls back to the
-# fakes when they are absent, and the wizard swaps the real client in via
+# Credentials alone are not enough: accounts.build.build_account_services
+# falls back to the fakes when they are absent, and the wizard swaps the real client in via
 # composition.rebuild_runtime. A stored key with a fake client still attached
 # means the swap did not happen, and reporting "connected" there would be a
 # lie the operator has no way to see through.

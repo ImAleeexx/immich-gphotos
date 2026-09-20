@@ -2,11 +2,16 @@
 a single `data_dir` (an account directory, or the legacy top-level data
 directory before multi-account existed).
 
-Split out of `main.build_services` so `AccountRegistry` can call it once per
-account, sharing one `Clock` and one `Redactor` across all of them rather
-than each account reinventing its own. `main.build_services` is kept as a
-thin single-account wrapper around this for `tests/test_main.py` and anyone
-still calling it directly.
+`AccountRegistry` calls this once per account, sharing one `Clock` and one
+`Redactor` across all of them rather than each account reinventing its own.
+This used to be wrapped by a thin single-account `main.build_services`, kept
+around for tests that predate `AccountRegistry` -- that wrapper is gone
+(Task 6, Ruling R12): it called this function with no `bandwidth`/`gate` at
+all, so anything built through it ran silently uncapped and ungated
+regardless of what a stored settings row said, and a second entry point that
+can drift from the real one's behaviour like that is precisely what Task 6
+exists to remove. Tests that need a single account's graph now call this
+function directly, under its real name.
 """
 
 import os

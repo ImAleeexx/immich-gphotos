@@ -59,7 +59,7 @@ def configure_logging(
 
     `redactor`, when passed, is installed as-is rather than a fresh copy built
     from `secrets` — callers that also hand the same instance to the store
-    layer (see `main.build_services`) get one Redactor whose `add_secret`
+    layer (see `accounts.build.build_account_services`) get one Redactor whose `add_secret`
     later reaches both logs and persisted events, not two copies that drift
     apart the moment a credential is added after boot.
     """

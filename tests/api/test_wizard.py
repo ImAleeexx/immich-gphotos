@@ -14,13 +14,13 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
+from immich_gphotos.accounts.build import build_account_services
 from immich_gphotos.api.app import create_app
 from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
 from immich_gphotos.gphotos.client import GpmcClient
 from immich_gphotos.gphotos.fake import FakeGooglePhotosClient
 from immich_gphotos.immich.client import HttpImmichClient
 from immich_gphotos.immich.fake import FakeImmichClient
-from immich_gphotos.main import build_services
 from immich_gphotos.setup.wizard import CORE_PERMISSIONS, REQUIRED_PERMISSIONS
 from immich_gphotos.storage_keys import GOOGLE_AUTH_KEY, IMMICH_KEY_KEY, IMMICH_URL_KEY, WORKFLOW_ID_KEY
 
@@ -35,7 +35,7 @@ SECRET_AUTH_DATA = "totally-not-android-id-shaped-secret-value"
 def rig(tmp_path):
     from immich_gphotos.accounts.registry import Account, AccountRegistry
 
-    services, loops_handle = build_services(tmp_path / "account", env={})
+    services, loops_handle = build_account_services(tmp_path / "account", env={})
     registry = AccountRegistry(tmp_path / "registry", env={})
     record = registry.accounts_repo.add(
         account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"
@@ -287,7 +287,7 @@ def test_wizard_routes_require_a_session(tmp_path):
     /api -- not added to OPEN_PATHS."""
     from immich_gphotos.accounts.registry import Account, AccountRegistry
 
-    services, _ = build_services(tmp_path / "account", env={})
+    services, _ = build_account_services(tmp_path / "account", env={})
     registry = AccountRegistry(tmp_path / "registry", env={})
     record = registry.accounts_repo.add(
         account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"

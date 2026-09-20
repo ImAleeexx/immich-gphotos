@@ -43,9 +43,10 @@ def test_a_global_setting_survives_a_restart_and_wins_over_an_account_copy():
 def test_an_account_copy_of_a_global_key_is_used_as_a_fallback_when_no_global_row_exists():
     """The other half of the precedence rule: on a database that has not
     been through the split (stored_global absent/empty), the account's copy
-    still applies -- this is exactly what keeps `build_services` (the
-    single-account entry point with no control database at all) reading
-    worker_threads/bandwidth_bytes_per_second back correctly."""
+    still applies -- this is exactly what keeps a single account built with
+    no control database at all (`build_account_services` called directly,
+    with `global_settings=None`) reading worker_threads/
+    bandwidth_bytes_per_second back correctly."""
     from immich_gphotos.accounts.build import _merged_settings
 
     settings = _merged_settings("http://immich:2283", {"worker_threads": 5}, None)
@@ -212,7 +213,17 @@ def test_a_combined_patch_through_the_real_route_reaches_the_other_account_corre
 def test_a_global_cap_change_gives_every_account_the_same_new_bucket_instance(two_account_registry):
     """The common (global-only patch) path: `put_settings` routes this
     through `AccountRegistry.apply_global_settings`, which must call
-    `rebuild_shared_limiters` before its rebuild loop."""
+    `rebuild_shared_limiters` before its rebuild loop.
+
+    Captures the pre-patch bucket and asserts the post-patch one is a
+    *different* instance, not just non-None: `two_account_registry` happens
+    to start with `services.bandwidth is None` (it registers accounts built
+    directly via `build_account_services`, bypassing `AccountRegistry._load`
+    entirely -- see `tests/accounts/test_registry.py` for the boot-path
+    coverage that fixture skips), so an `is not None` check alone would keep
+    passing even if `rebuild_shared_limiters` were deleted outright, as long
+    as this fixture never changes. Asserting against the captured `before`
+    value does not have that blind spot."""
     from immich_gphotos.api.app import create_app
 
     client = TestClient(create_app(two_account_registry), follow_redirects=False)
@@ -221,12 +232,14 @@ def test_a_global_cap_change_gives_every_account_the_same_new_bucket_instance(tw
     current = two_account_registry.default()
     other = two_account_registry.get("acct-2")
     assert current.id == "acct-1" and other is not None
+    before = current.services.bandwidth
 
     response = client.put("/api/settings", json={"bandwidth_bytes_per_second": 1048576})
     assert response.status_code == 200
 
     new_bucket = current.services.runtime._worker._bandwidth
     assert new_bucket is not None
+    assert new_bucket is not before
     # Every account's live Worker -- not just its Services field -- meters
     # against the exact same TokenBucket instance.
     assert other.services.runtime._worker._bandwidth is new_bucket
@@ -255,12 +268,14 @@ def test_a_combined_scope_patch_also_gives_every_account_the_same_new_bucket_ins
     current = two_account_registry.default()
     other = two_account_registry.get("acct-2")
     assert current.id == "acct-1" and other is not None
+    before = current.services.bandwidth
 
     response = client.put("/api/settings", json={"quality": "saver", "bandwidth_bytes_per_second": 1048576})
     assert response.status_code == 200
 
     new_bucket = current.services.runtime._worker._bandwidth
     assert new_bucket is not None
+    assert new_bucket is not before
     assert other.services.runtime._worker._bandwidth is new_bucket
     assert current.services.bandwidth is new_bucket
     assert other.services.bandwidth is new_bucket

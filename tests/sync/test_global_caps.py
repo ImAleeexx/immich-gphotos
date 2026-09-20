@@ -70,47 +70,84 @@ def make_worker(tmp_path, name: str, *, gate, bandwidth=None, contents=b"ABC"):
     return worker, assets, clock
 
 
+class ObservableGate:
+    """A real mutual-exclusion gate (backed by `threading.Semaphore`) that
+    also lets a test observe, deterministically, the instant a caller
+    *starts* trying to acquire it.
+
+    This exists so `test_the_upload_gate_bounds_concurrent_uploads` never has
+    to guess how long to wait for the second worker's thread to "probably"
+    have reached `gate.acquire()` -- a fixed timeout race that a slow CI box
+    (or a correct-looking but actually gate-less implementation, which reaches
+    the same point faster with nothing to block on) can pass for the wrong
+    reason. Once `acquire_attempted` fires for a caller, that caller's thread
+    is inside the real `Semaphore.acquire()` call; if the one slot is already
+    held by someone else, a real `Semaphore.acquire()` *cannot* return until
+    that holder releases -- so observing the event is equivalent to knowing
+    the second caller is genuinely blocked, not "maybe about to be scheduled
+    soon."""
+
+    def __init__(self, value: int = 1) -> None:
+        self._sem = threading.Semaphore(value)
+        self.acquire_attempted = threading.Event()
+
+    def __enter__(self) -> None:
+        self.acquire_attempted.set()
+        self._sem.acquire()
+
+    def __exit__(self, *exc_info: object) -> bool:
+        self._sem.release()
+        return False
+
+
 def test_the_upload_gate_bounds_concurrent_uploads(tmp_path):
-    """Two workers sharing a 1-slot semaphore: the second cannot be inside
-    upload() while the first is. Driven by a barrier (not a sleep) so both
-    threads are genuinely inside `process()` -- one holding the gate, one
-    blocked on it -- at the moment the peak is observed, making the
-    assertion deterministic rather than timing-dependent."""
-    gate = threading.Semaphore(1)
-    inside = 0
-    peak = 0
-    lock = threading.Lock()
-    entered_upload = threading.Event()
-    release_upload = threading.Event()
+    """Two workers sharing a 1-slot gate: the second cannot be inside
+    upload() while the first is.
 
-    class SlowGphotos(FakeGooglePhotosClient):
-        def upload(self, path, *, checksum, filename):
-            nonlocal inside, peak
-            with lock:
-                inside += 1
-                peak = max(peak, inside)
-            # Signal the first upload has the gate, then hold it until the
-            # test says to let go -- long enough for the second worker's
-            # gate.acquire() to actually be attempted while this one holds
-            # the only slot.
-            entered_upload.set()
-            release_upload.wait(timeout=5)
-            with lock:
-                inside -= 1
-            return super().upload(path, checksum=checksum, filename=filename)
+    Deterministic, not timing-based, on both ends:
 
-    def build(name: str, asset_id: str):
+    - The first worker's `upload()` is made to block (via an Event it waits
+      on, not a sleep) until the test releases it, so the test can wait for
+      "the first is genuinely inside upload(), holding the gate's only slot"
+      before doing anything else.
+    - The second worker's own attempt to acquire that same, already-held
+      slot is observed via `ObservableGate.acquire_attempted` rather than
+      inferred from a fixed pause. The moment that event fires, the second
+      worker's thread is inside a real `Semaphore.acquire()` call with zero
+      permits available, which cannot return until the first releases -- so
+      checking, right then, that the second worker has not yet reached
+      `upload()` is a logical guarantee, not a race. This is also what makes
+      the test discriminate a *missing* gate: with `gate=None` (see the
+      mutation test in the task report), `acquire_attempted` is never set at
+      all, since `Worker.process` never touches `self._gate` in that branch,
+      and the test fails on that wait instead of passing vacuously."""
+    gate = ObservableGate(1)
+    entered_upload_1 = threading.Event()
+    entered_upload_2 = threading.Event()
+    release_upload_1 = threading.Event()
+
+    def make_gphotos(entered: threading.Event, release: threading.Event | None):
+        class SlowGphotos(FakeGooglePhotosClient):
+            def upload(self, path, *, checksum, filename):
+                entered.set()
+                if release is not None:
+                    assert release.wait(timeout=5), "test never released the first upload"
+                return super().upload(path, checksum=checksum, filename=filename)
+
+        return SlowGphotos()
+
+    def build(name: str, asset_id: str, entered: threading.Event, release: threading.Event | None):
         clock = FakeClock()
         assets = AssetRepo(connect(tmp_path / f"{name}.db"), clock)
         immich = FakeImmichClient(contents={asset_id: b"ABC"})
-        gphotos = SlowGphotos()
+        gphotos = make_gphotos(entered, release)
         resolver = ByteResolver(immich, scratch=tmp_path / f"{name}-scratch")
         worker = Worker(assets, gphotos, resolver, Filters(), RetryPolicy(jitter=0.0), clock, gate=gate)
         asset = replace(ASSET, immich_id=asset_id, checksum=f"sum-{asset_id}")
         return worker, claim(assets, asset)
 
-    worker1, stored1 = build("acct1", "a1")
-    worker2, stored2 = build("acct2", "a2")
+    worker1, stored1 = build("acct1", "a1", entered_upload_1, release_upload_1)
+    worker2, stored2 = build("acct2", "a2", entered_upload_2, None)
 
     results: dict[str, object] = {}
 
@@ -119,23 +156,26 @@ def test_the_upload_gate_bounds_concurrent_uploads(tmp_path):
 
     t1 = threading.Thread(target=run, args=("t1", worker1, stored1))
     t1.start()
-    assert entered_upload.wait(timeout=5), "first upload never started"
+    assert entered_upload_1.wait(timeout=5), "first upload never started"
+    # t1 is now inside upload(), holding the gate's only slot, blocked on
+    # release_upload_1. Its own (already-satisfied) acquire also set
+    # acquire_attempted; clear it so the next time it fires, it can only be
+    # t2's.
+    gate.acquire_attempted.clear()
 
-    # The second worker's process() call blocks on gate.acquire() -- the
-    # thread itself must be started for this to be a real test, but there is
-    # nothing to synchronize on beyond "it is running and blocked", since the
-    # whole point is that this thread never gets to increment `inside` while
-    # the first one holds the slot. Give it a moment to actually reach and
-    # block on the acquire before releasing the first.
     t2 = threading.Thread(target=run, args=("t2", worker2, stored2))
     t2.start()
+    assert gate.acquire_attempted.wait(timeout=5), "second worker never attempted to acquire the gate"
+    # With the slot already held by t1 and capacity 1, t2's acquire() cannot
+    # have returned yet -- it is provably blocked, so it cannot be inside
+    # upload() yet either. No sleep, no "give it a moment": this is true the
+    # instant acquire_attempted fires, by construction of a real Semaphore.
+    assert not entered_upload_2.is_set()
 
-    # Only now let the first upload finish, then wait for the second.
-    release_upload.set()
+    release_upload_1.set()
     t1.join(timeout=5)
     t2.join(timeout=5)
 
-    assert peak == 1
     assert results["t1"].state.name == "SYNCED"
     assert results["t2"].state.name == "SYNCED"
 

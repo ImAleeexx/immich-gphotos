@@ -44,9 +44,10 @@ def test_add_secret_ignores_empty_values():
 
 
 def test_configure_logging_accepts_a_shared_redactor_instance(capsys):
-    """main.build_services hands the same Redactor to configure_logging and to
-    the stores, so a credential added later (Redactor.add_secret) reaches
-    both without configure_logging building its own separate copy."""
+    """accounts.build.build_account_services hands the same Redactor to
+    configure_logging and to the stores, so a credential added later
+    (Redactor.add_secret) reaches both without configure_logging building its
+    own separate copy."""
     shared = Redactor(["hunter3"])
     configure_logging("INFO", redactor=shared)
     shared.add_secret("added-later")

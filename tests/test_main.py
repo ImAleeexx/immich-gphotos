@@ -2,16 +2,16 @@ import logging
 
 from fastapi.testclient import TestClient
 
+from immich_gphotos.accounts.build import build_account_services
 from immich_gphotos.accounts.registry import Account, AccountRegistry
 from immich_gphotos.api.app import create_app
 from immich_gphotos.api.routes import SETTING_KEY
-from immich_gphotos.main import build_services
 from immich_gphotos.store.db import connect
 from immich_gphotos.store.kv import SettingRepo
 
 
-def test_build_services_wires_a_working_app(tmp_path):
-    services, loops = build_services(tmp_path / "account", env={})
+def test_build_account_services_wires_a_working_app(tmp_path):
+    services, loops = build_account_services(tmp_path / "account", env={})
     registry = AccountRegistry(tmp_path / "registry", env={})
     record = registry.accounts_repo.add(
         account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"
@@ -25,11 +25,11 @@ def test_build_services_wires_a_working_app(tmp_path):
 
 def test_a_credential_added_after_boot_is_scrubbed_from_both_events_and_logs(tmp_path):
     """The wizard persists a credential (e.g. the Immich API key) well after
-    build_services ran and the log handler/Redactor were constructed. Both
+    build_account_services ran and the log handler/Redactor were constructed. Both
     must share one Redactor instance and grow together via add_secret, or a
     credential entered through the wizard would never be scrubbed for the
     rest of the process's life."""
-    services, _ = build_services(tmp_path, env={})
+    services, _ = build_account_services(tmp_path, env={})
 
     handler = logging.getLogger().handlers[0]
     assert handler.formatter._redactor is services.redactor
@@ -40,8 +40,8 @@ def test_a_credential_added_after_boot_is_scrubbed_from_both_events_and_logs(tmp
 
 
 def test_the_webhook_secret_survives_a_restart(tmp_path):
-    first, _ = build_services(tmp_path, env={})
-    second, _ = build_services(tmp_path, env={})
+    first, _ = build_account_services(tmp_path, env={})
+    second, _ = build_account_services(tmp_path, env={})
     assert first.webhook_secret == second.webhook_secret
 
 
@@ -51,7 +51,7 @@ def test_backfill_and_wizard_and_workflow_are_wired(tmp_path):
     populated so the setup and diagnostics routes work. On a fresh database no
     workflow has been created yet, so workflow_id must read back as None
     rather than some leftover or hardcoded value."""
-    services, _ = build_services(tmp_path, env={})
+    services, _ = build_account_services(tmp_path, env={})
     assert services.backfill is not None
     assert services.wizard is not None
     assert services.immich is not None
@@ -60,12 +60,12 @@ def test_backfill_and_wizard_and_workflow_are_wired(tmp_path):
 
 
 def test_a_persisted_setting_survives_a_rebuild_of_the_services(tmp_path):
-    """Correction 1: build_services must read back settings the API persisted
+    """Correction 1: build_account_services must read back settings the API persisted
     under the "settings" key, or the settings UI is decorative."""
     conn = connect(tmp_path / "immich-gphotos.db")
     SettingRepo(conn).set(SETTING_KEY, {"quality": "saver", "albums_enabled": False, "worker_threads": 5})
 
-    services, _ = build_services(tmp_path, env={})
+    services, _ = build_account_services(tmp_path, env={})
 
     assert services.settings.quality == "saver"
     assert services.settings.albums_enabled is False
@@ -74,7 +74,7 @@ def test_a_persisted_setting_survives_a_rebuild_of_the_services(tmp_path):
     assert services.settings.deletions_enabled is False
 
 
-def test_malformed_persisted_settings_do_not_crash_build_services(tmp_path):
+def test_malformed_persisted_settings_do_not_crash_build_account_services(tmp_path):
     """A malformed settings row is user-writable JSON and must not make the
     container unstartable: unknown keys and wrong-typed values are ignored."""
     conn = connect(tmp_path / "immich-gphotos.db")
@@ -89,7 +89,7 @@ def test_malformed_persisted_settings_do_not_crash_build_services(tmp_path):
         },
     )
 
-    services, _ = build_services(tmp_path, env={})
+    services, _ = build_account_services(tmp_path, env={})
 
     # None of the malformed values were applied; defaults stand.
     assert services.settings.quality == "original"
@@ -105,7 +105,7 @@ def test_a_hand_edited_zero_bandwidth_cap_is_ignored_not_applied(tmp_path):
     conn = connect(tmp_path / "immich-gphotos.db")
     SettingRepo(conn).set(SETTING_KEY, {"bandwidth_bytes_per_second": 0})
 
-    services, _ = build_services(tmp_path, env={})
+    services, _ = build_account_services(tmp_path, env={})
 
     assert services.settings.bandwidth_bytes_per_second is None
 
@@ -120,7 +120,7 @@ def test_a_hand_edited_bandwidth_cap_below_the_minimum_rate_is_ignored(tmp_path)
     conn = connect(tmp_path / "immich-gphotos.db")
     SettingRepo(conn).set(SETTING_KEY, {"bandwidth_bytes_per_second": 1})
 
-    services, _ = build_services(tmp_path, env={})
+    services, _ = build_account_services(tmp_path, env={})
 
     assert services.settings.bandwidth_bytes_per_second is None
 
@@ -133,7 +133,7 @@ def test_worker_threads_out_of_the_apis_bounds_is_rejected(tmp_path):
     conn = connect(tmp_path / "immich-gphotos.db")
     SettingRepo(conn).set(SETTING_KEY, {"worker_threads": 17})
 
-    services, _ = build_services(tmp_path, env={})
+    services, _ = build_account_services(tmp_path, env={})
 
     assert services.settings.worker_threads == 2  # dataclass default, not 17
 
@@ -170,6 +170,6 @@ def test_stale_uploading_assets_are_requeued_at_startup(tmp_path):
             ((SystemClock().now() - timedelta(hours=2)).isoformat(), "a1"),
         )
 
-    services, _ = build_services(tmp_path, env={})
+    services, _ = build_account_services(tmp_path, env={})
     stored = services.assets.get("a1")
     assert stored.state.value == "pending"

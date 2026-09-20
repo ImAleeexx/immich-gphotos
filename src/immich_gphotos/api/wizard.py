@@ -156,8 +156,8 @@ def wizard_workflow(payload: WorkflowRequest, request: Request) -> dict:
     if not webhook_url:
         raise HTTPException(status_code=422, detail="a webhook URL is required")
 
-    # Reuse the secret build_services already generated and persisted at boot
-    # (itself produced by Wizard.generate_secret) -- never mint a second one,
+    # Reuse the secret build_account_services already generated and persisted
+    # at boot (itself produced by Wizard.generate_secret) -- never mint a second one,
     # or the receiver at /hooks/immich would check against a secret the
     # workflow was never told about.
     try:

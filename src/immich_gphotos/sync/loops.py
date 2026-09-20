@@ -12,8 +12,8 @@ IDLE_SLEEP_SECONDS = 2.0
 PAUSE_RETRY_AFTER = timedelta(minutes=10)
 
 # Recovers assets a crash left claimed mid-upload. Run on the reconcile cadence:
-# build_services only does this once at boot, which leaves stranded assets
-# stuck until someone notices and restarts the container.
+# build_account_services only does this once at boot, which leaves stranded
+# assets stuck until someone notices and restarts the container.
 STALE_UPLOAD_AGE = timedelta(hours=1)
 
 logger = logging.getLogger(__name__)

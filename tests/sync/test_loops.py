@@ -217,8 +217,9 @@ def test_run_forever_stops_when_the_event_is_set(rig):
 
 def test_stale_uploads_are_requeued_periodically(rig):
     """Correction 2: requeue_stale_uploading must run on the reconcile cadence too,
-    not only once at startup in build_services -- otherwise a crash mid-upload
-    strands assets in UPLOADING until someone notices and restarts the container."""
+    not only once at startup in build_account_services -- otherwise a crash
+    mid-upload strands assets in UPLOADING until someone notices and restarts
+    the container."""
     clock, events = rig
     assets = StubAssets()
     loop = loops(clock, events, Settings(reconcile_interval=timedelta(minutes=15)), assets=assets)
