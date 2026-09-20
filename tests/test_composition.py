@@ -5,6 +5,7 @@ credentials -- proving the mechanism itself, independent of any particular
 route that triggers it.
 """
 
+import threading
 from dataclasses import replace
 from datetime import timedelta
 
@@ -21,6 +22,7 @@ from immich_gphotos.store.db import connect
 from immich_gphotos.store.events import EventRepo
 from immich_gphotos.store.kv import CursorRepo, SettingRepo
 from immich_gphotos.sync.loops import LoopsHandle
+from immich_gphotos.sync.throttle import TokenBucket
 from immich_gphotos.sync.worker import HALT_RETRY_DELAY
 
 
@@ -34,6 +36,16 @@ def build(tmp_path, settings=None, immich=None):
     settings = settings or Settings()
     immich = immich if immich is not None else FakeImmichClient()
     gphotos = FakeGooglePhotosClient()
+    # build_runtime_graph no longer constructs its own TokenBucket from
+    # settings.bandwidth_bytes_per_second (Task 6: that construction moved to
+    # AccountRegistry, which shares one bucket across every account instead
+    # of each graph getting a private one) -- so this single-account test
+    # helper does what AccountRegistry now does, for the one graph it builds.
+    bandwidth = (
+        TokenBucket(settings.bandwidth_bytes_per_second, clock)
+        if settings.bandwidth_bytes_per_second is not None
+        else None
+    )
     runtime, backfill, loops = build_runtime_graph(
         immich=immich,
         gphotos=gphotos,
@@ -45,6 +57,7 @@ def build(tmp_path, settings=None, immich=None):
         clock=clock,
         scratch=tmp_path / "scratch",
         allow_direct=True,
+        bandwidth=bandwidth,
     )
     services = Services(
         assets=assets,
@@ -59,6 +72,7 @@ def build(tmp_path, settings=None, immich=None):
         immich=immich,
         gphotos=gphotos,
         clock=clock,
+        bandwidth=bandwidth,
         scratch=tmp_path / "scratch",
         allow_direct=True,
         loops_handle=LoopsHandle(loops),
@@ -385,3 +399,37 @@ def test_a_cap_change_leaves_failure_backoff_halt_retry_and_window_deferrals_on_
     assert {i: assets.get(i).next_attempt_at for i in untouched} == untouched
     assert assets.get("backoff").attempts == 1  # the backoff's own bookkeeping is intact
     assert [s.asset.immich_id for s in assets.claim_next(limit=10)] == ["capped"]
+
+
+# --- RULING R6: rebuild_runtime must forward the shared bandwidth bucket and
+# upload gate already installed on `services`, or the very first settings
+# save after boot silently hands every account back its own private,
+# uncapped upload path -- invisible until someone measures their uplink.
+
+
+def test_a_settings_save_does_not_drop_the_shared_bandwidth_bucket_and_gate(tmp_path):
+    """R6. `Services.bandwidth`/`Services.gate` stand in here for what
+    `AccountRegistry` actually installs -- one `TokenBucket` and one
+    `threading.Semaphore` shared by every account. A settings save that has
+    nothing to do with either (here, `quality`) must still carry them across
+    the swap unchanged: `build_runtime_graph` no longer builds its own
+    bucket, so if `rebuild_runtime` failed to forward these, the rebuilt
+    Worker would silently end up with `bandwidth=None, gate=None` --
+    uncapped and ungated -- with nothing in the API or the UI to show it."""
+    services = build(tmp_path, settings=Settings(bandwidth_bytes_per_second=1_000_000))
+    shared_bandwidth = services.bandwidth
+    assert shared_bandwidth is not None  # build() only sets this when the setting is set
+    assert services.runtime._worker._bandwidth is shared_bandwidth
+    # build()'s own graph never wires a gate in (it predates Task 6 and has
+    # no reason to grow one just for this test); set one directly on
+    # `services` here to stand in for what `AccountRegistry` would have
+    # installed there in production, and prove the *rebuild* forwards it.
+    shared_gate = threading.Semaphore(3)
+    services.gate = shared_gate
+
+    rebuild_runtime(services, settings=replace(services.settings, quality="saver"))
+
+    assert services.bandwidth is shared_bandwidth
+    assert services.gate is shared_gate
+    assert services.runtime._worker._bandwidth is shared_bandwidth
+    assert services.runtime._worker._gate is shared_gate

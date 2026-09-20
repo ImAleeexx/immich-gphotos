@@ -229,6 +229,19 @@ def put_settings(patch: SettingsPatch, request: Request) -> dict:
     # and this one once, with both halves together, gets exactly one
     # rebuild per account out of a single request.
     if account_updates and global_updates:
+        # R6 hazard: rebuild (and assign onto every account's Services) the
+        # shared bandwidth bucket / upload gate *before* either rebuild
+        # below runs -- including this request's own account.
+        # `rebuild_runtime` forwards whatever `services.bandwidth`/
+        # `services.gate` already hold; it never asks the registry for the
+        # current ones itself. This branch does not go through
+        # `apply_global_settings` (it needs the current account rebuilt with
+        # its *combined* `updates`, not just `global_updates`), so it must
+        # call this directly or the current account's own rebuild just below
+        # would build its graph against the bucket/gate that were current
+        # before this request, while every other account picks up the new
+        # ones -- see `AccountRegistry.rebuild_shared_limiters`.
+        registry.rebuild_shared_limiters(global_updates)
         for account in registry.all():
             if account.services is not services:
                 rebuild_runtime(

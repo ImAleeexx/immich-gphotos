@@ -2,9 +2,11 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 from immich_gphotos.clock import Clock
 from immich_gphotos.config import Filters, RetryPolicy
@@ -68,6 +70,7 @@ class Worker:
         clock: Clock,
         *,
         bandwidth: TokenBucket | None = None,
+        gate: AbstractContextManager[Any] | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._assets = assets
@@ -81,6 +84,14 @@ class Worker:
         # would be wrong by a factor of the pool size. None means no cap and
         # must add no overhead (see _throttle_upload below).
         self._bandwidth = bandwidth
+        # The process-wide upload gate (Task 6): one instance -- production
+        # passes a `threading.Semaphore` sized to the global `worker_threads`
+        # -- shared by every account's Worker, so N accounts' pools cannot
+        # multiply the effective upload concurrency by N. Any context
+        # manager works; None (the default) means no gate and costs nothing
+        # extra. See the acquire site in `process` for exactly what it wraps
+        # and why.
+        self._gate = gate
         # Injectable so tests can drive the wait with a FakeClock and assert
         # on it without a real sleep; production uses the real time.sleep.
         self._sleep = sleep
@@ -212,9 +223,32 @@ class Worker:
                             reason="deferred: bandwidth cap would block the loop too long",
                             deferred=True,
                         )
-                    media_key = self._gphotos.upload(
-                        resolved.path, checksum=asset.checksum, filename=asset.filename
-                    )
+                    # The gate wraps this call alone -- never the wider
+                    # resolve/throttle/upload region above it. `ByteResolver.
+                    # resolve` runs *before* `_throttle_upload` (metering
+                    # needs the resolved file's size), and a wait below
+                    # MAX_INLINE_THROTTLE_WAIT_SECONDS is slept out right here
+                    # on this thread (see `_throttle_upload`'s `defer_wait is
+                    # None` branch after an inline sleep). Wrapping the gate
+                    # around that region too would hold the process-wide
+                    # upload slot for the whole sleep -- for a transfer that
+                    # has not even started moving bytes to Google yet -- and
+                    # reintroduce exactly the cross-account stalling that
+                    # giving each account its own worker thread (Tasks 1-5)
+                    # exists to remove. The upload call is the only thing
+                    # here that actually touches the shared WAN resource the
+                    # gate protects, so it is the only thing the gate needs
+                    # to bound. This is precisely the line a future reader
+                    # will try to "tidy" outward -- don't.
+                    if self._gate is not None:
+                        with self._gate:
+                            media_key = self._gphotos.upload(
+                                resolved.path, checksum=asset.checksum, filename=asset.filename
+                            )
+                    else:
+                        media_key = self._gphotos.upload(
+                            resolved.path, checksum=asset.checksum, filename=asset.filename
+                        )
                 finally:
                     self._resolver.release(resolved)
 

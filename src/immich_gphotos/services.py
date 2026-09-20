@@ -39,3 +39,15 @@ class Services:
     scratch: Path | None = None  # where ByteResolver stages downloads; needed to rebuild it
     allow_direct: bool = True  # IGP_ALLOW_DIRECT_READS, needed to rebuild ByteResolver
     loops_handle: Any = None  # sync.loops.LoopsHandle; the live-swap target for the background loop
+    # The process-wide shared limiters (Task 6): sync.throttle.TokenBucket
+    # (or None, meaning no cap) and a context manager gating concurrent
+    # uploads (a threading.Semaphore in production). Held here -- not just
+    # passed once at construction -- so `composition.rebuild_runtime` can
+    # forward whatever is currently installed across every settings-save
+    # swap (Ruling R6), and so `AccountRegistry.rebuild_shared_limiters` has
+    # somewhere to write the replacement when a global cap changes: it
+    # reassigns these fields on every account's `Services` *before*
+    # triggering any account's own rebuild, so no account's rebuild can ever
+    # read a stale bucket/gate off itself.
+    bandwidth: Any = None  # sync.throttle.TokenBucket | None
+    gate: Any = None  # AbstractContextManager[Any] | None, e.g. threading.Semaphore

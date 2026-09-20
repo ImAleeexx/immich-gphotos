@@ -21,6 +21,7 @@ of `rebuild_runtime`.
 """
 
 import threading
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
@@ -105,19 +106,37 @@ def build_runtime_graph(
     clock: Clock,
     scratch: Path,
     allow_direct: bool,
+    bandwidth: TokenBucket | None = None,
+    gate: AbstractContextManager[Any] | None = None,
 ) -> tuple[Runtime, BackfillJob, BackgroundLoops]:
-    """Construct one fresh copy of everything that closes over clients/settings."""
+    """Construct one fresh copy of everything that closes over clients/settings.
+
+    `bandwidth` and `gate` are the process-wide shared limiters (Task 6): one
+    `TokenBucket` and one upload-slot semaphore for the *whole process*, not
+    one per account. This function used to build its own `TokenBucket` right
+    here from `settings.bandwidth_bytes_per_second` -- harmless for a single
+    account, but once every account got its own runtime graph (Tasks 1-5),
+    every account building its own bucket from the same global setting meant
+    N accounts multiplied the configured cap by N, and each account's own
+    worker pool sized independently meant `worker_threads` became
+    `worker_threads x N` too. So this no longer constructs either one: the
+    caller (`AccountRegistry`, which builds both once from the global
+    settings row and hands the same instances to every account, or a test)
+    is responsible for sharing them. `None` for either (the default) means
+    "no cap" / "no gate", exactly as before, and costs nothing extra --
+    `Worker` never touches an unset bandwidth or gate.
+    """
     resolver = ByteResolver(immich, scratch=scratch, allow_direct=allow_direct)
-    # One bucket for the whole graph, shared by every worker thread that
-    # calls this Worker's process() -- a bucket per thread would let the pool
-    # size multiply the configured cap. None (the default, unset) means no
-    # cap and is never constructed, so it adds no overhead.
-    bandwidth = (
-        TokenBucket(settings.bandwidth_bytes_per_second, clock)
-        if settings.bandwidth_bytes_per_second is not None
-        else None
+    worker = Worker(
+        assets,
+        gphotos,
+        resolver,
+        settings.filters,
+        settings.retry,
+        clock,
+        bandwidth=bandwidth,
+        gate=gate,
     )
-    worker = Worker(assets, gphotos, resolver, settings.filters, settings.retry, clock, bandwidth=bandwidth)
     runtime = Runtime(assets, worker, settings, clock, events, immich=immich)
     backfill = BackfillJob(immich, assets, cursors, settings)
     loops = BackgroundLoops(
@@ -164,6 +183,17 @@ def rebuild_runtime(
     if hasattr(gphotos, "quality"):
         gphotos.quality = settings.quality
 
+    # RULING R6: forward the shared limiters already installed on `services`.
+    # Every settings save and every wizard step funnels through this
+    # function, so if it did not carry `bandwidth`/`gate` across the swap,
+    # the very first settings change after boot would silently rebuild this
+    # account's Worker with neither -- quietly handing it back its own
+    # private, uncapped upload path, invisible until someone measures their
+    # uplink. `AccountRegistry` is what actually keeps `services.bandwidth`/
+    # `services.gate` pointed at the current shared instances (rebuilding
+    # them and re-assigning onto every account when a global cap changes,
+    # before any account's own rebuild_runtime call) -- this function's job
+    # is only to make sure whatever is already there survives the swap.
     runtime, backfill, loops = build_runtime_graph(
         immich=immich,
         gphotos=gphotos,
@@ -175,6 +205,8 @@ def rebuild_runtime(
         clock=services.clock,
         scratch=services.scratch or Path("scratch"),
         allow_direct=services.allow_direct,
+        bandwidth=services.bandwidth,
+        gate=services.gate,
     )
 
     # A fresh Runtime/BackgroundLoops otherwise starts unpaused, so any

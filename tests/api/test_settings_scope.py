@@ -198,3 +198,69 @@ def test_a_combined_patch_through_the_real_route_reaches_the_other_account_corre
     # rebuild-every-account pass for the global change).
     assert calls.count(current.services) == 1
     assert calls.count(other.services) == 1
+
+
+# --- RULING R6, the deeper hazard: a global cap change must build the new
+# shared bucket/gate and assign them onto *every* account's Services before
+# any account is rebuilt -- current account included. Get the order wrong
+# and the account the request is looking at rebuilds against the *old*
+# bucket while every other account gets the new one: the cap then applies
+# inconsistently, and it is nearly invisible, since every account still has
+# *a* bucket, just not the same one.
+
+
+def test_a_global_cap_change_gives_every_account_the_same_new_bucket_instance(two_account_registry):
+    """The common (global-only patch) path: `put_settings` routes this
+    through `AccountRegistry.apply_global_settings`, which must call
+    `rebuild_shared_limiters` before its rebuild loop."""
+    from immich_gphotos.api.app import create_app
+
+    client = TestClient(create_app(two_account_registry), follow_redirects=False)
+    assert client.post("/login", data={"password": "test-password"}).status_code == 303
+
+    current = two_account_registry.default()
+    other = two_account_registry.get("acct-2")
+    assert current.id == "acct-1" and other is not None
+
+    response = client.put("/api/settings", json={"bandwidth_bytes_per_second": 1048576})
+    assert response.status_code == 200
+
+    new_bucket = current.services.runtime._worker._bandwidth
+    assert new_bucket is not None
+    # Every account's live Worker -- not just its Services field -- meters
+    # against the exact same TokenBucket instance.
+    assert other.services.runtime._worker._bandwidth is new_bucket
+    assert current.services.bandwidth is new_bucket
+    assert other.services.bandwidth is new_bucket
+
+
+def test_a_combined_scope_patch_also_gives_every_account_the_same_new_bucket_instance(
+    two_account_registry,
+):
+    """The branch `apply_global_settings` never runs for: a patch combining
+    an account-scoped key (here, `quality`) with a global one is routed by
+    `put_settings` itself, which rebuilds the *current* account directly
+    rather than through `apply_global_settings` (see
+    `test_a_patch_touching_both_scopes_rebuilds_the_current_account_exactly_once`).
+    That branch must call `rebuild_shared_limiters` too, and before its own
+    rebuild of the current account, not only before the other accounts' --
+    otherwise this is exactly the account that would end up metering against
+    a stale bucket, since it is the one branch that does not go through
+    `apply_global_settings` at all."""
+    from immich_gphotos.api.app import create_app
+
+    client = TestClient(create_app(two_account_registry), follow_redirects=False)
+    assert client.post("/login", data={"password": "test-password"}).status_code == 303
+
+    current = two_account_registry.default()
+    other = two_account_registry.get("acct-2")
+    assert current.id == "acct-1" and other is not None
+
+    response = client.put("/api/settings", json={"quality": "saver", "bandwidth_bytes_per_second": 1048576})
+    assert response.status_code == 200
+
+    new_bucket = current.services.runtime._worker._bandwidth
+    assert new_bucket is not None
+    assert other.services.runtime._worker._bandwidth is new_bucket
+    assert current.services.bandwidth is new_bucket
+    assert other.services.bandwidth is new_bucket

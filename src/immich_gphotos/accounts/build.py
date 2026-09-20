@@ -11,9 +11,10 @@ still calling it directly.
 
 import os
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from dataclasses import replace
 from pathlib import Path
-from typing import get_args
+from typing import Any, get_args
 
 from immich_gphotos.clock import Clock, SystemClock
 from immich_gphotos.composition import build_runtime_graph
@@ -46,6 +47,7 @@ from immich_gphotos.store.db import connect
 from immich_gphotos.store.events import EventRepo
 from immich_gphotos.store.kv import CursorRepo, SettingRepo
 from immich_gphotos.sync.loops import STALE_UPLOAD_AGE, LoopsHandle
+from immich_gphotos.sync.throttle import TokenBucket
 
 _QUALITIES = frozenset(get_args(Quality))
 
@@ -152,18 +154,20 @@ def build_account_services(
     redactor: Redactor | None = None,
     env: Mapping[str, str] | None = None,
     global_settings: dict | None = None,
-    bandwidth=None,
-    gate=None,
+    bandwidth: TokenBucket | None = None,
+    gate: AbstractContextManager[Any] | None = None,
 ) -> tuple[Services, LoopsHandle]:
     """One account's graph. Credentials come from that account's database, never from env.
 
     `global_settings` is the control database's copy of the settings row
     (`AccountRegistry.settings.get(SETTINGS_KEY)`) and is threaded straight
     into `_merged_settings`, which is where the global-vs-account precedence
-    actually lives (Task 5). `bandwidth` and `gate` are still accepted here
-    and ignored -- they exist so `AccountRegistry` has a stable signature to
-    call into; actually binding one shared `TokenBucket` and upload semaphore
-    across accounts is Task 6.
+    actually lives (Task 5). `bandwidth` and `gate` are the process-wide
+    shared limiters from Task 6 -- `AccountRegistry` builds one `TokenBucket`
+    and one upload semaphore from the global settings row and passes the
+    *same* instances into every account's `build_account_services` call, so
+    this account's `Worker` meters and gates against the one bucket/slot the
+    whole process shares rather than a private copy of its own.
     """
     env = env if env is not None else os.environ
     clock = clock if clock is not None else SystemClock()
@@ -230,6 +234,8 @@ def build_account_services(
         clock=clock,
         scratch=scratch,
         allow_direct=allow_direct,
+        bandwidth=bandwidth,
+        gate=gate,
     )
 
     workflow_id = settings_repo.get(WORKFLOW_ID_KEY)
@@ -251,6 +257,8 @@ def build_account_services(
         redactor=redactor,
         scratch=scratch,
         allow_direct=allow_direct,
+        bandwidth=bandwidth,
+        gate=gate,
     )
     loops_handle = LoopsHandle(loops)
     services.loops_handle = loops_handle
