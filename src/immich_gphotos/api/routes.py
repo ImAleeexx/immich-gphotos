@@ -2,7 +2,7 @@ from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from immich_gphotos.composition import rebuild_runtime
 from immich_gphotos.config import (
@@ -12,7 +12,7 @@ from immich_gphotos.config import (
     Quality,
 )
 from immich_gphotos.services import Services
-from immich_gphotos.storage_keys import GLOBAL_SETTING_KEYS
+from immich_gphotos.storage_keys import GLOBAL_SETTING_KEYS, GOOGLE_AUTH_KEY
 from immich_gphotos.storage_keys import SETTINGS_KEY as SETTING_KEY
 from immich_gphotos.sync.backfill import BACKFILL_CURSOR
 from immich_gphotos.sync.throttle import transfer_allowed
@@ -270,3 +270,95 @@ def backfill_reset(request: Request) -> dict:
     services: Services = request.state.services
     services.backfill.reset()
     return {"running": False}
+
+
+class AccountCreate(BaseModel):
+    label: str
+
+    @field_validator("label")
+    @classmethod
+    def _label_not_blank(cls, value: str) -> str:
+        # A whitespace-only label would round-trip as an unlabelled account
+        # forever (nothing else validates it after this), so it is rejected
+        # here rather than accepted and left to look broken in the account
+        # switcher.
+        if not value.strip():
+            raise ValueError("label must not be blank")
+        return value
+
+
+class AccountDelete(BaseModel):
+    confirm_label: str
+    delete_data: bool = False
+
+
+def _account_state(services: Services) -> str:
+    """One word summarizing an account for the account-list page.
+
+    Checked in this order because they are not mutually exclusive in what
+    they *could* both be true of, but only one is the useful thing to tell
+    the admin: an account that has never been through the wizard has no
+    Google credential yet, so "needs setup" beats reporting whatever
+    (irrelevant, boot-time-default) `paused_reason` its untouched `Runtime`
+    happens to carry. Once setup is done, a live `paused_reason` (e.g.
+    AUTH_INVALID) is the more urgent thing to surface than plain "syncing".
+    """
+    if services.settings_repo.get(GOOGLE_AUTH_KEY) is None:
+        return "setup_needed"
+    if getattr(services.runtime, "paused_reason", None) is not None:
+        return "paused"
+    return "syncing"
+
+
+@router.get("/accounts")
+def list_accounts(request: Request) -> list[dict]:
+    """One row per account for the account-switcher/management page.
+
+    Deliberately narrow: `immich_url` is reported (it identifies which
+    server an account talks to, useful in the UI) but nothing that is
+    actually a credential -- no API key, no Google auth blob -- ever goes
+    into this response. See `_account_state` for what "state" means.
+    """
+    registry = request.app.state.accounts
+    return [
+        {
+            "id": account.id,
+            "label": account.label,
+            "immich_url": account.services.settings.immich_url,
+            "state": _account_state(account.services),
+            "synced": account.services.assets.synced_count(),
+            "paused_reason": getattr(account.services.runtime, "paused_reason", None),
+        }
+        for account in registry.all()
+    ]
+
+
+@router.post("/accounts")
+def create_account(payload: AccountCreate, request: Request) -> dict:
+    registry = request.app.state.accounts
+    account = registry.create(payload.label)
+    return {"id": account.id}
+
+
+@router.delete("/accounts/{account_id}")
+def delete_account(account_id: str, payload: AccountDelete, request: Request) -> dict:
+    """Remove an account, gated by the same typed-confirmation shape as
+    `DELETIONS_ENABLE_PHRASE`: the caller must echo the account's own label
+    back exactly, so a slip of a click cannot delete the wrong account -- and
+    the phrase means something only the person looking at the right account
+    in the UI would know, unlike a plain "confirm: yes" button.
+
+    `registry.remove`'s return value -- `None`, or a warning about a workflow
+    Immich would not let go of -- is surfaced verbatim rather than swallowed:
+    the removal itself still succeeds either way (see that method's
+    docstring), but a warning here is the only place the admin ever finds out
+    they need to clean up a stray workflow by hand.
+    """
+    registry = request.app.state.accounts
+    account = registry.get(account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="no such account")
+    if payload.confirm_label != account.label:
+        raise HTTPException(status_code=422, detail=f'confirm_label must be exactly "{account.label}"')
+    warning = registry.remove(account_id, delete_data=payload.delete_data)
+    return {"removed": account_id, "warning": warning}

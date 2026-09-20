@@ -148,3 +148,6 @@ class HttpImmichClient:
 
     def workflow_logs(self, workflow_id: str) -> list[dict]:
         return self._request("GET", f"/workflows/{workflow_id}/logs").json()
+
+    def delete_workflow(self, workflow_id: str) -> None:
+        self._request("DELETE", f"/workflows/{workflow_id}")

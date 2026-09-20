@@ -5,6 +5,9 @@ different shape. This exists so the newer tests do not each rebuild a
 Services graph by hand.
 """
 
+import base64
+import hashlib
+
 import pytest
 
 from immich_gphotos.clock import FakeClock
@@ -100,6 +103,79 @@ def two_account_registry(tmp_path):
         registry.register(Account(record=record, services=services, loops=loops))
     registry.settings.set(PASSWORD_KEY, hash_password("test-password"))
     return registry
+
+
+@pytest.fixture
+def two_account_http(tmp_path):
+    """Task 8/Task 7 fixture: an authenticated client plus two *real*
+    accounts ("Alex", "Mum"), built the way the admin's "add account" flow
+    actually builds them -- through `registry.create`, over a real on-disk
+    data dir -- rather than the hand-assembled `Services` graphs
+    `two_account_registry` uses. `LEGACY_WEBHOOK_ACCOUNT_KEY` is pointed at
+    the first account, the same as a migrated v1 install, so Task 7's
+    per-account-vs-legacy webhook routing tests have a legacy target to
+    route against.
+
+    Named differently from `two_account_registry` on purpose (see that
+    fixture's docstring) -- this one additionally wraps the registry in an
+    authenticated `TestClient` and returns the `Account` objects alongside
+    it, which the webhook tests need to reach into (`account.services.assets`)
+    to prove which account a request landed on.
+    """
+    from immich_gphotos.accounts.registry import AccountRegistry
+    from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
+    from immich_gphotos.storage_keys import LEGACY_WEBHOOK_ACCOUNT_KEY
+
+    registry = AccountRegistry(tmp_path / "two-account-http", env={})
+    first = registry.create("Alex")
+    second = registry.create("Mum")
+    registry.settings.set(LEGACY_WEBHOOK_ACCOUNT_KEY, first.id)
+    registry.settings.set(PASSWORD_KEY, hash_password("test-password"))
+    client = _authenticated(registry)
+    try:
+        yield client, first, second
+    finally:
+        # `registry.create` starts a real background-loop thread per
+        # account (Ruling R9) -- clean them up so a whole test session's
+        # worth of these fixtures does not leave one daemon thread ticking
+        # per test forever.
+        registry.stop_all()
+
+
+@pytest.fixture
+def webhook_payload():
+    """A factory building the `{"data": {"asset": {...}}}` shape
+    `/hooks/immich` expects, parameterized by asset id -- the same shape
+    `tests/api/test_hooks.py` builds inline for a single fixed id, but
+    reusable across however many distinct assets Task 7's tests need.
+
+    The checksum is derived from `asset_id` (a SHA-1 of it, base64-encoded)
+    rather than a fixed constant, so payloads for different asset ids never
+    collide on checksum -- `AssetRepo` treats checksum as a dedup key.
+    """
+
+    def make(asset_id: str) -> dict:
+        checksum = base64.b64encode(hashlib.sha1(asset_id.encode()).digest()).decode("ascii")  # noqa: S324
+        return {
+            "type": "AssetV1",
+            "trigger": "AssetCreate",
+            "data": {
+                "asset": {
+                    "id": asset_id,
+                    "checksum": checksum,
+                    "originalFileName": f"{asset_id}.jpg",
+                    "type": "IMAGE",
+                    "updatedAt": "2026-09-20T10:00:00.000Z",
+                    "originalPath": f"/data/upload/{asset_id}.jpg",
+                    "visibility": "timeline",
+                    "isOffline": False,
+                    "tags": [],
+                    "exifInfo": {"fileSizeInByte": 4096},
+                }
+            },
+        }
+
+    return make
 
 
 @pytest.fixture

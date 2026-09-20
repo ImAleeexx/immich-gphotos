@@ -10,13 +10,15 @@ from fastapi.staticfiles import StaticFiles
 from immich_gphotos.accounts.registry import Account, AccountRegistry
 from immich_gphotos.api import auth, hooks, ops, pages, readiness, routes, stream, wizard
 
-STATIC_DIR = Path(__file__).parent.parent / "web" / "static"
-
-# The cookie naming which account a browser is currently looking at. Absent
-# entirely (a client that never visited the not-yet-built account switcher,
-# or /api-only usage) simply means "the default account" -- see
+# Re-exported so existing importers of this module (including tests/api/*)
+# keep working untouched -- see the constant's own docstring in
+# `storage_keys` for why it now lives there instead of here. Absent entirely
+# on a request (a client that never visited the account switcher, or
+# /api-only usage) simply means "the default account" -- see
 # `resolve_account`.
-ACCOUNT_COOKIE = "igp_account"
+from immich_gphotos.storage_keys import ACCOUNT_COOKIE  # noqa: F401
+
+STATIC_DIR = Path(__file__).parent.parent / "web" / "static"
 
 # RULING R10: routes that must stay behind session auth (so they are
 # deliberately NOT in `auth.OPEN_PATHS`) but that need no account to do
@@ -119,6 +121,7 @@ def create_app(registry: AccountRegistry) -> FastAPI:
         if (
             account is None
             and not request.url.path.startswith("/accounts")
+            and not request.url.path.startswith("/api/accounts")
             and request.url.path not in ACCOUNT_AGNOSTIC_PATHS
         ):
             # A fresh install, or every account removed: nothing to serve.
@@ -126,6 +129,16 @@ def create_app(registry: AccountRegistry) -> FastAPI:
             # one route capable of fixing this stays reachable -- it does not
             # exist yet, which is expected (Ruling R5); everything else
             # bounces there instead of touching a nonexistent `.services`.
+            #
+            # /api/accounts (Task 8's list/create/delete routes) is exempted
+            # for the same reason, one level down: it is the route Task 9's
+            # page actually calls to fix a zero-account install, and none of
+            # its handlers read `request.state.services` -- they work
+            # entirely off `request.app.state.accounts` -- so letting them
+            # through with `account`/`services` left `None` is safe, not
+            # just convenient. Without this, POST /api/accounts (the only
+            # way to create the very first account) would 409 on the one
+            # install that most needs it to work.
             if request.url.path.startswith("/api"):
                 return JSONResponse({"detail": "no accounts configured"}, status_code=409)
             return RedirectResponse("/accounts", status_code=307)

@@ -25,6 +25,7 @@ class FakeImmichClient:
         self.method_keys = {"immich-plugin-core#webhook"} if method_keys is None else method_keys
         self.downloads: list[str] = []
         self.created_workflows: list[dict] = []
+        self.deleted_workflows: list[str] = []
         self.searches: list[dict] = []
         self.album_asset_ids_calls: list[str] = []
 
@@ -72,3 +73,6 @@ class FakeImmichClient:
 
     def workflow_logs(self, workflow_id: str) -> list[dict]:
         return []
+
+    def delete_workflow(self, workflow_id: str) -> None:
+        self.deleted_workflows.append(workflow_id)

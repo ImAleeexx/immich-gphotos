@@ -2,6 +2,7 @@ from immich_gphotos.accounts.control import CONTROL_DB_NAME
 from immich_gphotos.accounts.migrate import LEGACY_DB_NAME, account_dir
 from immich_gphotos.accounts.registry import AccountRegistry
 from immich_gphotos.config import Settings
+from immich_gphotos.immich.protocol import ImmichError
 from immich_gphotos.storage_keys import SECRET_KEY, SETTINGS_KEY
 from immich_gphotos.store.db import connect
 from immich_gphotos.store.kv import SettingRepo
@@ -122,3 +123,112 @@ def test_an_invalid_global_row_at_boot_does_not_crash_and_falls_back_to_defaults
     for _ in range(permits):
         gate.release()
     assert permits == Settings().worker_threads  # falls back to 2, not 999
+
+
+# --- Task 8: create/remove -------------------------------------------------
+
+
+def test_create_makes_a_directory_a_database_and_a_running_thread(tmp_path):
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+    registry.start_all()
+    assert account.label == "Mum"
+    assert (account_dir(tmp_path, account.id) / LEGACY_DB_NAME).is_file()
+    assert account.thread.is_alive()
+    assert [a.label for a in registry.all()] == ["Mum"]
+    registry.stop_all()
+
+
+def test_remove_stops_the_thread_and_forgets_the_account(tmp_path):
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+    registry.start_all()
+    thread = account.thread
+    registry.remove(account.id, delete_data=False)
+    assert not thread.is_alive()
+    assert registry.get(account.id) is None
+    assert registry.all() == []
+
+
+def test_remove_keeps_the_data_unless_asked_to_delete_it(tmp_path):
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+    registry.remove(account.id, delete_data=False)
+    assert account_dir(tmp_path, account.id).exists()
+
+    other = registry.create("Dad")
+    registry.remove(other.id, delete_data=True)
+    assert not account_dir(tmp_path, other.id).exists()
+
+
+def test_remove_leaves_a_dead_legacy_webhook_key_solvable_by_task_7(tmp_path):
+    """`LEGACY_WEBHOOK_ACCOUNT_KEY` (Task 7's problem, not this task's) must
+    not be left in a state Task 7 cannot recover from: `remove` does not
+    touch the key at all, so it keeps naming the id it always named --
+    now-dead, but still a real string a caller can look up and fall back
+    from, exactly the way `/hooks/immich` already falls back to
+    `registry.default()` when `registry.get(legacy_id)` is `None`."""
+    from immich_gphotos.storage_keys import LEGACY_WEBHOOK_ACCOUNT_KEY
+
+    registry = AccountRegistry(tmp_path, env={})
+    legacy = registry.create("Alex")
+    registry.settings.set(LEGACY_WEBHOOK_ACCOUNT_KEY, legacy.id)
+
+    registry.remove(legacy.id, delete_data=False)
+
+    assert registry.legacy_account_id() == legacy.id
+    assert registry.get(registry.legacy_account_id()) is None
+
+
+def test_remove_never_calls_google(tmp_path):
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+    calls = []
+    account.services.gphotos = type("Spy", (), {"__getattr__": lambda s, n: calls.append(n)})()
+    registry.remove(account.id, delete_data=True)
+    assert calls == []
+
+
+def test_remove_reports_a_workflow_that_could_not_be_deleted(tmp_path):
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+    account.services.workflow_id = "wf-1"
+
+    class Broken:
+        def delete_workflow(self, workflow_id):
+            raise ImmichError("gone")
+
+    account.services.immich = Broken()
+    warning = registry.remove(account.id, delete_data=False)
+    assert "wf-1" in warning
+
+
+def test_create_gives_a_new_account_the_same_shared_bucket_and_gate_as_boot(tmp_path):
+    """Pins the hazard called out in the task brief: `create` is a second
+    construction path alongside `_load`, and if it ever stops routing
+    through the shared `_bandwidth`/`_gate` instances, a newly created
+    account gets a private, uncapped worker instead of sharing the one
+    process-wide cap every other account respects. Comparing the *live*
+    Worker's limiter, not just `Services.bandwidth`/`gate`, is what would
+    have caught a `_build` that forgot to pass `bandwidth=`/`gate=` through
+    to `build_account_services` even though the fields on `Services` still
+    got set some other way.
+    """
+    data_dir = tmp_path / "data"
+    setup = AccountRegistry(data_dir, env={})
+    setup.accounts_repo.add(account_id="acct-boot", label="Boot", created_at="2026-09-20T10:00:00Z")
+    setup.settings.set(SETTINGS_KEY, {"bandwidth_bytes_per_second": 1048576, "worker_threads": 3})
+
+    registry = AccountRegistry(data_dir, env={})  # a fresh boot, with acct-boot already on disk
+    booted = registry.default()
+    assert booted is not None
+
+    created = registry.create("Mum")
+
+    assert created.services.bandwidth is booted.services.bandwidth
+    assert created.services.gate is booted.services.gate
+    assert created.services.runtime._worker._bandwidth is booted.services.runtime._worker._bandwidth
+    assert created.services.runtime._worker._gate is booted.services.runtime._worker._gate
+    assert created.services.bandwidth is not None
+    assert created.services.gate is not None
+    registry.stop_all()

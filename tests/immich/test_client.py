@@ -186,3 +186,10 @@ def test_create_workflow_posts_the_webhook_step_and_returns_id():
     body = route.calls.last.request.read().decode()
     assert "AssetCreate" in body
     assert "immich-plugin-core#webhook" in body
+
+
+@respx.mock
+def test_delete_workflow_deletes_by_id():
+    route = respx.delete(f"{BASE}/api/workflows/wf-1").mock(return_value=httpx.Response(200, json={}))
+    client().delete_workflow("wf-1")
+    assert route.called

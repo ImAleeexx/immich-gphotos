@@ -32,3 +32,11 @@ GLOBAL_SETTING_KEYS = frozenset({"bandwidth_bytes_per_second", "worker_threads"}
 # a workflow registered in Immich against that bare path, and repointing or
 # dropping it stops that person's backups with nothing in the UI to show it.
 LEGACY_WEBHOOK_ACCOUNT_KEY = "legacy_webhook_account"
+
+# The cookie naming which account a browser is currently looking at (Task 4).
+# Defined here rather than in `api.app` so `api.pages` (whose `/accounts/
+# select` sets it) can read the same constant without importing `api.app` --
+# which itself imports `api.pages` to mount its router, so that import would
+# be circular. `api.app` re-exports this name for its existing importers
+# (`resolve_account`, and tests that reach for `api.app.ACCOUNT_COOKIE`).
+ACCOUNT_COOKIE = "igp_account"

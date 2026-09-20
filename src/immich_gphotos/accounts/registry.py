@@ -9,6 +9,7 @@ every account -- see the class docstring below for why.
 
 import logging
 import os
+import shutil
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -20,10 +21,11 @@ from immich_gphotos.accounts.control import (
     AccountRecord,
     AccountRepo,
     connect_control,
+    new_account_id,
 )
 from immich_gphotos.accounts.migrate import account_dir, ensure_control_db
 from immich_gphotos.clock import Clock, SystemClock
-from immich_gphotos.composition import rebuild_runtime
+from immich_gphotos.composition import _close_outgoing_immich_client, rebuild_runtime
 from immich_gphotos.config import Settings
 from immich_gphotos.logging import Redactor, configure_logging
 from immich_gphotos.services import Services
@@ -119,23 +121,47 @@ class AccountRegistry:
         gate = threading.Semaphore(threads if threads is not None else Settings().worker_threads)
         return bandwidth, gate
 
+    def _build(self, record: AccountRecord) -> tuple[Services, LoopsHandle]:
+        """Build one account's runtime graph -- the single call site shared by
+        `_load` (every account already on disk at boot) and `create` (a new
+        one added while the process is running).
+
+        This is where Task 6's hazard actually gets closed for a *second*
+        construction path: `create` used to be free to build an account's
+        graph by calling `build_account_services` directly, and it would have
+        been easy to do so without `bandwidth=self._bandwidth, gate=self._gate`
+        and the current global settings row -- exactly the private,
+        uncapped-worker defect Task 6 exists to prevent, just reachable
+        through "add an account" instead of a container restart. Routing both
+        paths through this one method means there is only one place that can
+        forget to pass them, and both callers automatically pick up a fix
+        made here.
+
+        `global_settings` is re-read from `self.settings` on every call
+        (rather than cached from `_load`) so a `create` long after boot still
+        sees whatever the control row currently holds -- it, not a snapshot
+        from startup, is what `_merged_settings` must merge the new account's
+        row against.
+        """
+        return build_account_services(
+            account_dir(self._data_dir, record.id),
+            clock=self._clock,
+            redactor=self._redactor,
+            env=self._env,
+            global_settings=self.settings.get(SETTINGS_KEY),
+            bandwidth=self._bandwidth,
+            gate=self._gate,
+        )
+
     def _load(self) -> None:
-        # Read once and passed to every account: the global half of the
+        # Read once and passed to `_build_limiters`: the global half of the
         # settings row lives in this registry's own control database, not in
-        # any one account's, so each account's `_merged_settings` needs the
-        # same copy of it.
+        # any one account's, so the shared bucket/gate are built from the
+        # same copy of it every account's own `_build` call will also read.
         global_settings = self.settings.get(SETTINGS_KEY)
         self._bandwidth, self._gate = self._build_limiters(global_settings)
         for record in self.accounts_repo.list():
-            services, loops = build_account_services(
-                account_dir(self._data_dir, record.id),
-                clock=self._clock,
-                redactor=self._redactor,
-                env=self._env,
-                global_settings=global_settings,
-                bandwidth=self._bandwidth,
-                gate=self._gate,
-            )
+            services, loops = self._build(record)
             self.register(Account(record=record, services=services, loops=loops))
 
     def register(self, account: Account) -> None:
@@ -178,13 +204,24 @@ class AccountRegistry:
         for account in self.all():
             if account.thread is not None:
                 continue
-            account.thread = threading.Thread(
-                target=account.loops.run_forever,
-                args=(account.stop,),
-                name=f"igp-loop-{account.id}",
-                daemon=True,
-            )
-            account.thread.start()
+            self._start(account)
+
+    @staticmethod
+    def _start(account: Account) -> None:
+        """Start one account's named, daemon background-loop thread.
+
+        Split out of `start_all` so `create` can start exactly the one
+        account it just added without also touching every other account
+        already in the registry (see `create`'s docstring for why calling
+        `start_all` there instead is not the same thing).
+        """
+        account.thread = threading.Thread(
+            target=account.loops.run_forever,
+            args=(account.stop,),
+            name=f"igp-loop-{account.id}",
+            daemon=True,
+        )
+        account.thread.start()
 
     def stop_all(self, timeout: float = 5.0) -> None:
         """Signal every account's loop to stop, then join them.
@@ -278,3 +315,101 @@ class AccountRegistry:
         self.rebuild_shared_limiters(updates)
         for account in self.all():
             rebuild_runtime(account.services, settings=replace(account.services.settings, **updates))
+
+    def create(self, label: str) -> Account:
+        """Add a new account: a control-database row, its own on-disk
+        directory and database, and a running background-loop thread -- the
+        admin's "add account" flow (Task 8).
+
+        Goes through `_build`, the exact same construction `_load` uses for
+        every account already on disk at boot, so the new account shares the
+        one process-wide bandwidth bucket and upload gate with every other
+        account rather than getting a private, uncapped pair of its own (see
+        `_build`'s docstring for the hazard this closes).
+
+        Starts only this account's own thread via `_start`, rather than
+        calling `start_all()` -- which would also try to start any *other*
+        registered account whose `thread` happens to still be `None`. In a
+        real boot that never happens (`main.py` calls `start_all()` once
+        right after building the registry, before this method can ever run),
+        but a handful of tests build a registry with a hand-registered stub
+        account that is deliberately never started (`loops=None`, no
+        background thread wanted) -- `start_all()` would crash on
+        `account.loops.run_forever` for that account the moment any test
+        calls `create()` against such a registry. Starting only the account
+        this call just built sidesteps that entirely and is exactly as
+        correct in production, where the distinction never has an observable
+        effect (see Ruling R9's "skip if already started" guard, which
+        `start_all` still relies on for the boot-time case).
+        """
+        record = self.accounts_repo.add(
+            account_id=new_account_id(), label=label, created_at=self._clock.now().isoformat()
+        )
+        services, loops = self._build(record)
+        account = Account(record=record, services=services, loops=loops)
+        self.register(account)
+        self._start(account)
+        return account
+
+    def remove(self, account_id: str, *, delete_data: bool) -> str | None:
+        """Stop an account and forget it. Returns a warning to surface to the
+        admin, or `None` when nothing went wrong.
+
+        Order matters here and is deliberate: stop the loop thread and join
+        it (so nothing is still calling into this account's clients), close
+        the `Runtime`'s worker pool, close the outgoing Immich client, THEN
+        drop the account from both the in-memory registry and the control
+        database, and only then -- optionally -- delete its directory.
+        Deleting the directory before the database row is dropped would let
+        a crash between the two leave a control-database row pointing at a
+        directory that no longer exists, which `_load` has no story for
+        recovering from; dropping the row first means a crash after it just
+        leaves an orphaned directory on disk, harmless clutter rather than a
+        boot-time crash.
+
+        Popping the account out of `self._accounts` up front (rather than
+        only at the point the docstring above calls "drop from the registry")
+        is a separate, narrower thing: it stops `get`/`all`/`resolve_account`
+        from finding this account *the moment removal starts*, so a request
+        that arrives mid-teardown falls back to the default account instead
+        of touching a runtime that is in the middle of being torn down.
+
+        Deleting the account's workflow inside Immich is best effort: a dead
+        API key or an unreachable server must not block the removal (the
+        admin asked to remove an account specifically *because* something
+        about it is broken, often), but a workflow left behind keeps POSTing
+        into what is now a 401 forever in that person's Immich instance --
+        invisible to us but not to them -- so the failure is reported back
+        rather than silently swallowed. Nothing here ever calls the Google
+        client: Google Photos deletion is explicitly out of scope forever
+        (see the task brief) -- there is no "best effort" version of that,
+        because there is no version of that at all.
+        """
+        account = self._accounts.pop(account_id, None)
+        if account is None:
+            return None
+
+        warning = None
+        workflow_id = account.services.workflow_id
+        immich = account.services.immich
+        if workflow_id and immich is not None and hasattr(immich, "delete_workflow"):
+            try:
+                immich.delete_workflow(workflow_id)
+            except Exception as exc:  # noqa: BLE001 - best effort by design, see docstring
+                warning = (
+                    f"Could not delete workflow {workflow_id} in Immich ({exc}). "
+                    "Remove it there by hand, or it will keep firing into a rejected webhook."
+                )
+
+        account.stop.set()
+        if account.thread is not None:
+            account.thread.join(timeout=5.0)
+        close = getattr(account.services.runtime, "close", None)
+        if close is not None:
+            close()
+        _close_outgoing_immich_client(immich, getattr(account.services.runtime, "_pool", None))
+
+        self.accounts_repo.remove(account_id)
+        if delete_data:
+            shutil.rmtree(account_dir(self._data_dir, account_id), ignore_errors=True)
+        return warning
