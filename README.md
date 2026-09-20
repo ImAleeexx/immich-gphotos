@@ -217,7 +217,16 @@ All optional, all with working defaults, and **none of them ever carry a credent
 ## Monitoring
 
 - `GET /healthz` — liveness, no auth required.
-- `GET /metrics` — Prometheus counters for assets by state and whether transfer is paused, no auth required.
+- `GET /metrics` — Prometheus counters for assets by state and whether transfer is paused, no auth required. Every series carries an `account` label, so a multi-account container reports each account separately:
+
+  ```
+  immich_gphotos_assets_total{account="9f3c1a…",state="synced"} 1284
+  immich_gphotos_assets_total{account="9f3c1a…",state="failed"} 3
+  immich_gphotos_paused{account="9f3c1a…"} 0
+  immich_gphotos_paused{account="b7d204…"} 1
+  ```
+
+  The label is the account's opaque id, never the name you gave it: `/metrics` is unauthenticated by design, so nothing user-supplied goes in it. Alert on `immich_gphotos_paused` per account — a paused account is one whose credentials need re-entering, and nothing else about the container will look wrong. A container with no accounts configured yet still answers 200, with no series.
 - Structured JSON logs on stderr, with credentials redacted by exact match *and* by pattern.
 - A diagnostics page that also surfaces Immich's own workflow logs, so when the webhook path misfires you can read Immich's account of it rather than guessing.
 

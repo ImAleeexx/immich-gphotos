@@ -60,7 +60,59 @@ def test_metrics_expose_prometheus_counters(http):
     body = http.get("/metrics").text
     assert "immich_gphotos_assets_total" in body
     assert 'state="synced"' in body
-    assert "immich_gphotos_paused 0" in body
+    assert 'immich_gphotos_paused{account="acct-1"} 0' in body
+
+
+def test_metrics_label_every_series_with_the_account_id(http):
+    """FINDING I1: the spec has always said `/metrics` gains an `account`
+    label carrying the opaque id; the plan never carried that requirement
+    into a task, so it shipped unlabelled."""
+    body = http.get("/metrics").text
+    assert 'immich_gphotos_assets_total{account="acct-1",state="synced"} 1' in body
+    # No unlabelled series survives, or a scrape would silently merge
+    # accounts together (and the old single-account line would keep
+    # reporting only whichever account happens to be first).
+    assert "immich_gphotos_assets_total{state=" not in body
+    assert "immich_gphotos_paused 0" not in body
+
+
+def test_metrics_report_every_account_not_just_the_first(tmp_path):
+    """FINDING I1, the half that actually bites: on a three-account install
+    the old loop over `registry.default()` made accounts 2..N invisible, and
+    `immich_gphotos_paused` read 0 while one of them sat halted -- this
+    project's worst failure shape, reported as healthy by the one surface
+    that exists to catch it."""
+    from immich_gphotos.accounts.registry import Account, AccountRegistry
+
+    registry = AccountRegistry(tmp_path / "registry", env={})
+    for account_id in ("acct-1", "acct-2"):
+        record = registry.accounts_repo.add(
+            account_id=account_id, label="Mum & Dad", created_at="2026-09-20T10:00:00Z"
+        )
+        conn = connect(tmp_path / f"{account_id}.db")
+        clock = FakeClock()
+        services = Services(
+            assets=AssetRepo(conn, clock),
+            albums=AlbumRepo(conn),
+            cursors=CursorRepo(conn),
+            settings_repo=SettingRepo(conn),
+            events=EventRepo(conn, clock),
+            runtime=StubRuntime(),
+            settings=Settings(),
+            webhook_secret="s",
+        )
+        registry.register(Account(record=record, services=services, loops=None))
+    halted = registry.get("acct-2")
+    halted.services.runtime = type("Halted", (), {"paused_reason": "AUTH_INVALID"})()
+
+    body = TestClient(create_app(registry)).get("/metrics").text
+
+    assert 'immich_gphotos_paused{account="acct-1"} 0' in body
+    assert 'immich_gphotos_paused{account="acct-2"} 1' in body
+    # The user-supplied label is never the label value: /metrics is
+    # unauthenticated by design, and free text there both leaks what someone
+    # named their account and can carry a quote or newline.
+    assert "Mum & Dad" not in body
 
 
 def test_metrics_on_a_fresh_install_with_no_accounts_reports_zero_rather_than_500(tmp_path):
@@ -77,10 +129,11 @@ def test_metrics_on_a_fresh_install_with_no_accounts_reports_zero_rather_than_50
 
     assert response.status_code == 200
     # The HELP/TYPE header lines are unconditional; what must be absent is any
-    # actual per-state gauge value, which only exists once counts_by_state()
-    # has something to report.
-    assert "immich_gphotos_assets_total{state=" not in response.text
-    assert "immich_gphotos_paused 0" in response.text
+    # actual gauge value, since every series is now per-account (finding I1)
+    # and there is no account to emit one for.
+    assert "immich_gphotos_assets_total{" not in response.text
+    assert "immich_gphotos_paused{" not in response.text
+    assert "# TYPE immich_gphotos_paused gauge" in response.text
 
 
 def test_healthz_is_open_and_ok_with_no_accounts(tmp_path):
