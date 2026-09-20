@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import sys
+import threading
 from collections.abc import Iterable
 
 PLACEHOLDER = "[redacted]"
@@ -13,6 +14,16 @@ _PATTERNS = [re.compile(r"androidId=[^\s&]+(&app=[^\s]+)?", re.IGNORECASE)]
 class Redactor:
     def __init__(self, secrets: Iterable[str | None]) -> None:
         self._secrets = sorted((s for s in secrets if s), key=len, reverse=True)
+        # FINDING M3: `add_secret` is read-then-reassign, and one `Redactor`
+        # is now shared by every account (see `AccountRegistry`'s class
+        # docstring). Two wizards completing at the same moment on different
+        # accounts -- two request threads -- both read the same `_secrets`
+        # list and both write a list built from it, so the second write drops
+        # the first's secret and one account's credential goes unscrubbed
+        # from the shared log stream for the life of the process. There is no
+        # error and nothing to notice: the logs simply contain a live
+        # credential. Only the reassignment needs the lock.
+        self._lock = threading.Lock()
 
     def add_secret(self, secret: str | None) -> None:
         """Register a credential discovered after construction.
@@ -22,12 +33,25 @@ class Redactor:
         in the database at boot (nothing, on a fresh install). Without this,
         a credential entered through the wizard would never be scrubbed from
         logs or stored events for the lifetime of the process.
+
+        The membership check is inside the lock too: outside it, two threads
+        adding the *same* secret could both find it absent and append it
+        twice -- harmless in output, but it would make the list grow on every
+        retry of a wizard step.
         """
-        if not secret or secret in self._secrets:
+        if not secret:
             return
-        self._secrets = sorted((*self._secrets, secret), key=len, reverse=True)
+        with self._lock:
+            if secret in self._secrets:
+                return
+            self._secrets = sorted((*self._secrets, secret), key=len, reverse=True)
 
     def scrub(self, text: str) -> str:
+        # Deliberately unlocked, and on the hot path for every log line and
+        # every stored event: it only ever reads `self._secrets`, and
+        # `add_secret` rebinds that attribute rather than mutating the list
+        # in place, so this either sees the whole old list or the whole new
+        # one -- never a list being appended to underneath it.
         for secret in self._secrets:
             text = text.replace(secret, PLACEHOLDER)
         for pattern in _PATTERNS:

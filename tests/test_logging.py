@@ -73,3 +73,46 @@ def test_configure_logging_redacts_the_logger_name(capsys):
     line = capsys.readouterr().err.strip().splitlines()[-1]
     record = json.loads(line)
     assert "hunter2" not in record["logger"]
+
+
+def test_two_threads_adding_secrets_at_once_lose_neither():
+    """FINDING M3: `add_secret` is read-then-reassign, and one `Redactor` is
+    shared by every account. Two wizard completions on different accounts
+    are two request threads, and without a lock the second's reassignment is
+    built from a list read before the first's -- so one account's credential
+    stays in the shared log stream for the life of the process, with no
+    error and nothing to notice.
+
+    Two things make the interleaving reliable rather than lucky: the barrier
+    lines both threads up on the read, and the redactor is pre-loaded with
+    enough secrets that the `sorted()` between the read and the reassignment
+    spans plenty of bytecode for the interpreter to switch threads inside
+    (helped along by a short switch interval). Without the lock this loses a
+    secret within a couple of rounds; with it, never.
+    """
+    import sys
+    import threading
+
+    switch_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        for round_number in range(20):
+            redactor = Redactor(f"filler-secret-{i:05d}" for i in range(4000))
+            start = threading.Barrier(2)
+            secrets = (f"immich-key-{round_number}", f"google-auth-{round_number}")
+
+            def add(secret, redactor=redactor, start=start):
+                start.wait(timeout=5)
+                redactor.add_secret(secret)
+
+            threads = [threading.Thread(target=add, args=(s,)) for s in secrets]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+            scrubbed = redactor.scrub(" ".join(secrets))
+            for secret in secrets:
+                assert secret not in scrubbed, f"round {round_number} lost {secret}"
+    finally:
+        sys.setswitchinterval(switch_interval)

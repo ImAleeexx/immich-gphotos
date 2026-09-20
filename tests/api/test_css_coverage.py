@@ -167,3 +167,34 @@ def test_a_hover_color_rule_excludes_btn_anchors():
         "found an unscoped `a:hover` rule that would apply to `.btn` "
         f"anchors too; use `a:not(.btn):hover` instead: {offending}"
     )
+
+
+def test_the_disclosure_marker_reset_is_scoped_to_the_two_components_that_need_it():
+    """FINDING M5: `summary { list-style: none }` and
+    `summary::-webkit-details-marker { display: none }` were written
+    unscoped, so they stripped the disclosure triangle off *every*
+    `<details>` in the app -- and off any added later, whose author would
+    have no reason to suspect a global rule had silently removed the
+    affordance that tells a reader the thing opens.
+
+    Only two components want the marker gone, and both style their summary
+    as a control in its own right: the account switcher in base.html
+    (`.switcher__current`) and the accounts page's per-row remove disclosure
+    (`.remove-account > summary`, a `.btn`). Anything else that matches a
+    bare `summary` selector is the bug coming back.
+    """
+    css = re.sub(r"/\*.*?\*/", "", APP_CSS.read_text(), flags=re.DOTALL)
+
+    offending = []
+    for selector_text, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        for selector in (s.strip() for s in selector_text.split(",")):
+            if selector in ("summary", "summary::-webkit-details-marker"):
+                offending.append(f"{selector} {{{body.strip()}}}")
+
+    assert not offending, (
+        "found a bare `summary` rule, which applies to every <details> in the "
+        f"app; scope it to the component that needs it: {offending}"
+    )
+    # ...and the two that do need it are still covered.
+    assert ".switcher__current::-webkit-details-marker" in css
+    assert ".remove-account > summary::-webkit-details-marker" in css

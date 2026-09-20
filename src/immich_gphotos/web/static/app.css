@@ -1204,15 +1204,23 @@ textarea:focus {
 }
 
 /* Account switcher (base.html) and the accounts page's per-row remove
-   disclosure -- both are native <details>/<summary>, so the marker every
-   browser draws in front of <summary> by default is suppressed once, here,
-   rather than per component. */
-summary {
+   disclosure -- both are native <details>/<summary> whose summary is styled
+   as a control (a menu button, a .btn), so the marker every browser draws in
+   front of <summary> would sit outside that control and look like a bug.
+
+   FINDING M5: scoped to those two, never bare `summary`. Unscoped, these
+   rules took the disclosure triangle off every other <details> in the app --
+   including any added later, whose author would have no reason to suspect a
+   global rule had silently removed the affordance that tells a reader the
+   thing opens. */
+.switcher__current,
+.remove-account > summary {
   list-style: none;
   cursor: pointer;
 }
 
-summary::-webkit-details-marker {
+.switcher__current::-webkit-details-marker,
+.remove-account > summary::-webkit-details-marker {
   display: none;
 }
 
