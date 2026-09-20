@@ -346,6 +346,58 @@ def test_remove_closes_the_accounts_database_connection(tmp_path):
         conn.execute("SELECT 1")
 
 
+class _RecordingLock:
+    """A stand-in for `LockingConnection.lock` that records whether it was
+    held at the moment some other code ran, without any real threading --
+    deterministic by construction rather than by timing."""
+
+    def __init__(self):
+        self.held = False
+
+    def __enter__(self):
+        self.held = True
+        return self
+
+    def __exit__(self, *exc_info):
+        self.held = False
+        return False
+
+
+class _FakeLockedConn:
+    def __init__(self):
+        self.lock = _RecordingLock()
+        self.closed_with_lock_held = None
+
+    def close(self):
+        self.closed_with_lock_held = self.lock.held
+
+
+def test_remove_closes_the_connection_with_its_lock_held(tmp_path):
+    """FIX 1 (blocking): `conn.close()` is the one access to a shared
+    connection anywhere in the process that used to skip `conn.lock` --
+    every other caller (including `GET /metrics`, unauthenticated and
+    walking `registry.all()` without the registry lock) wraps its
+    `execute()` in `with conn.lock:`. Closing a `sqlite3.Connection` while
+    another thread is mid-`execute()` on it is a CPython segfault, not a
+    catchable exception, so the discriminating check here is not "did this
+    raise" but "was the lock actually held at the instant `close()` ran".
+    A real race is not reproducible deterministically (that would require
+    provoking an actual SIGSEGV under CI, which is exactly what the lock
+    exists to prevent); this test instead asserts the mechanism directly by
+    substituting a lock that records whether it was entered around the
+    `close()` call. It fails if `remove` ever goes back to a bare
+    `conn.close()`."""
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+    fake_conn = _FakeLockedConn()
+    account.services.conn = fake_conn
+
+    registry.remove(account.id, delete_data=False)
+
+    assert fake_conn.closed_with_lock_held is True
+    assert fake_conn.lock.held is False  # released afterwards, not leaked
+
+
 def test_remove_refuses_to_delete_data_under_a_loop_thread_that_would_not_stop(tmp_path):
     """`thread.join(timeout=5.0)` is best effort: `LoopsHandle.run_forever`
     only checks `stop` between iterations, and one iteration can contain a

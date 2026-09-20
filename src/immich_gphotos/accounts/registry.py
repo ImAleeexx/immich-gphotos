@@ -552,7 +552,21 @@ class AccountRegistry:
                 # better than a signal 11.
                 conn = getattr(account.services, "conn", None) if stopped else None
                 if conn is not None:
-                    conn.close()
+                    # This is the one access to this connection anywhere in the
+                    # process that is not already covered by the `stopped` gate
+                    # above: that gate only rules out the account's own loop
+                    # thread, not a request thread that resolved this account's
+                    # `Services` just before the `pop` above and is still inside
+                    # an `execute()` on this connection (e.g. `GET /metrics`,
+                    # which walks `registry.all()` and calls `counts_by_state()`
+                    # without the registry lock). Closing a `sqlite3.Connection`
+                    # while another thread holds it mid-statement is a CPython
+                    # segfault, not a Python exception -- taking the lock first
+                    # makes that racer block until we are done, or, once the
+                    # `except` below has returned, hit an ordinary
+                    # `sqlite3.ProgrammingError` on the now-closed connection.
+                    with conn.lock:
+                        conn.close()
             except Exception as exc:  # noqa: BLE001 - see Ruling R14 above
                 close_warning = (
                     f"Removed the account, but closing its connections failed ({exc}). "
