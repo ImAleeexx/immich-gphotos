@@ -32,6 +32,7 @@ from immich_gphotos.logging import Redactor, configure_logging
 from immich_gphotos.services import Services
 from immich_gphotos.setup.wizard import Wizard
 from immich_gphotos.storage_keys import (
+    GLOBAL_SETTING_KEYS,
     GOOGLE_AUTH_KEY,
     IMMICH_KEY_KEY,
     IMMICH_URL_KEY,
@@ -48,46 +49,91 @@ from immich_gphotos.sync.loops import STALE_UPLOAD_AGE, LoopsHandle
 
 _QUALITIES = frozenset(get_args(Quality))
 
+# Every key the "settings" row can carry, account-scoped or global. Shared by
+# both halves of `_merged_settings` below so the two loops that walk `stored`
+# and `stored_global` visit the same key set through the same validation --
+# they just differ in which of the two dicts they read from and (for
+# `stored_global`) that only the global subset is ever considered.
+_SETTINGS_KEYS = (
+    "quality",
+    "albums_enabled",
+    "deletions_enabled",
+    "worker_threads",
+    "bandwidth_bytes_per_second",
+)
 
-def _merged_settings(immich_url: str, stored: object) -> Settings:
-    """Apply settings the API has persisted (under the "settings" key) over the
-    dataclass defaults.
 
-    The API writes `quality`, `albums_enabled`, `deletions_enabled`,
-    `worker_threads` and `bandwidth_bytes_per_second` into that row; nothing
-    else builds a `Settings` from it, so without this every change made in the
-    UI is silently lost on the next restart.
+def _validated(key: str, value: object) -> object | None:
+    """Validate one settings-row value against the same bounds `SettingsPatch`
+    enforces in `api.routes` -- so a hand-edited database row, in either the
+    account's copy of the settings row or the control database's global copy,
+    can never apply a value the API itself would reject.
 
-    The row is user-writable JSON, so this is defensive: an unknown key or a
-    value of the wrong type/range is ignored rather than raised, so a
-    malformed settings row can never make the container unstartable.
+    Returns the value unchanged when it is valid for `key`, else `None`.
+    Extracted out of `_merged_settings` so the identical check is applied to
+    both the account row and the global row rather than copy-pasted between
+    them (they used to be one dict; now they are two).
+    """
+    if key == "quality":
+        return value if isinstance(value, str) and value in _QUALITIES else None
+    if key in ("albums_enabled", "deletions_enabled"):
+        return value if isinstance(value, bool) else None
+    if key == "worker_threads":
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and MIN_WORKER_THREADS <= value <= MAX_WORKER_THREADS
+        ):
+            return value
+        return None
+    if key == "bandwidth_bytes_per_second":
+        if isinstance(value, int) and not isinstance(value, bool) and value >= MIN_BANDWIDTH_BYTES_PER_SECOND:
+            return value
+        return None
+    return None
+
+
+def _merged_settings(immich_url: str, stored: object, stored_global: object = None) -> Settings:
+    """Apply settings the API has persisted over the dataclass defaults.
+
+    `stored` is the account's own copy of the "settings" row (`quality`,
+    `albums_enabled`, `deletions_enabled`, and -- only on a database that
+    predates the account/global split, see `accounts.migrate` -- a leftover
+    copy of `worker_threads`/`bandwidth_bytes_per_second`). `stored_global` is
+    the control database's copy of the row, which holds only the two keys in
+    `storage_keys.GLOBAL_SETTING_KEYS`: the resources they govern (one
+    uplink, one machine) are shared by every account, not owned by one.
+    Nothing else builds a `Settings` from either row, so without this every
+    change made in the UI is silently lost on the next restart.
+
+    A global value always wins over an account's copy of the same key: once
+    a real global row exists, the account's copy is dead weight left over
+    from before the split (the migration deliberately does not scrub it --
+    see `accounts.migrate.ensure_control_db` -- so it still counts as a
+    fallback below for a database that has not been migrated at all, i.e.
+    `stored_global` is empty/absent).
+
+    Both rows are user-writable JSON, so this is defensive throughout: an
+    unknown key or a value of the wrong type/range is ignored rather than
+    raised, so a malformed settings row -- in either database -- can never
+    make the container unstartable.
     """
     overrides: dict[str, object] = {}
     if isinstance(stored, dict):
-        quality = stored.get("quality")
-        if isinstance(quality, str) and quality in _QUALITIES:
-            overrides["quality"] = quality
+        for key in _SETTINGS_KEYS:
+            if key not in stored:
+                continue
+            validated = _validated(key, stored[key])
+            if validated is not None:
+                overrides[key] = validated
 
-        for key in ("albums_enabled", "deletions_enabled"):
-            value = stored.get(key)
-            if isinstance(value, bool):
-                overrides[key] = value
-
-        worker_threads = stored.get("worker_threads")
-        if (
-            isinstance(worker_threads, int)
-            and not isinstance(worker_threads, bool)
-            and MIN_WORKER_THREADS <= worker_threads <= MAX_WORKER_THREADS
-        ):
-            overrides["worker_threads"] = worker_threads
-
-        bandwidth = stored.get("bandwidth_bytes_per_second")
-        if (
-            isinstance(bandwidth, int)
-            and not isinstance(bandwidth, bool)
-            and bandwidth >= MIN_BANDWIDTH_BYTES_PER_SECOND
-        ):
-            overrides["bandwidth_bytes_per_second"] = bandwidth
+    if isinstance(stored_global, dict):
+        for key in GLOBAL_SETTING_KEYS:
+            if key not in stored_global:
+                continue
+            validated = _validated(key, stored_global[key])
+            if validated is not None:
+                overrides[key] = validated
 
     return replace(Settings(immich_url=immich_url), **overrides)
 
@@ -104,10 +150,13 @@ def build_account_services(
 ) -> tuple[Services, LoopsHandle]:
     """One account's graph. Credentials come from that account's database, never from env.
 
-    `global_settings`, `bandwidth` and `gate` are accepted here and ignored
-    for now -- they exist so `AccountRegistry` has a stable signature to call
-    into; wiring the global bandwidth cap and worker-thread gate across
-    accounts is Phase 2 (Tasks 5 and 6).
+    `global_settings` is the control database's copy of the settings row
+    (`AccountRegistry.settings.get(SETTINGS_KEY)`) and is threaded straight
+    into `_merged_settings`, which is where the global-vs-account precedence
+    actually lives (Task 5). `bandwidth` and `gate` are still accepted here
+    and ignored -- they exist so `AccountRegistry` has a stable signature to
+    call into; actually binding one shared `TokenBucket` and upload semaphore
+    across accounts is Task 6.
     """
     env = env if env is not None else os.environ
     clock = clock if clock is not None else SystemClock()
@@ -120,7 +169,11 @@ def build_account_services(
         secret = Wizard.generate_secret()
         settings_repo.set(SECRET_KEY, secret)
 
-    settings = _merged_settings(str(settings_repo.get(IMMICH_URL_KEY) or ""), settings_repo.get(SETTINGS_KEY))
+    settings = _merged_settings(
+        str(settings_repo.get(IMMICH_URL_KEY) or ""),
+        settings_repo.get(SETTINGS_KEY),
+        global_settings,
+    )
 
     api_key = settings_repo.get(IMMICH_KEY_KEY)
     auth_data = settings_repo.get(GOOGLE_AUTH_KEY)

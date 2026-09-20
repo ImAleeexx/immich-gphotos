@@ -11,7 +11,7 @@ import logging
 import os
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from immich_gphotos.accounts.build import build_account_services
@@ -23,9 +23,10 @@ from immich_gphotos.accounts.control import (
 )
 from immich_gphotos.accounts.migrate import account_dir, ensure_control_db
 from immich_gphotos.clock import Clock, SystemClock
+from immich_gphotos.composition import rebuild_runtime
 from immich_gphotos.logging import Redactor, configure_logging
 from immich_gphotos.services import Services
-from immich_gphotos.storage_keys import LEGACY_WEBHOOK_ACCOUNT_KEY
+from immich_gphotos.storage_keys import LEGACY_WEBHOOK_ACCOUNT_KEY, SETTINGS_KEY
 from immich_gphotos.store.kv import SettingRepo
 from immich_gphotos.sync.loops import LoopsHandle
 
@@ -86,12 +87,18 @@ class AccountRegistry:
         self._load()
 
     def _load(self) -> None:
+        # Read once and passed to every account: the global half of the
+        # settings row lives in this registry's own control database, not in
+        # any one account's, so each account's `_merged_settings` needs the
+        # same copy of it.
+        global_settings = self.settings.get(SETTINGS_KEY)
         for record in self.accounts_repo.list():
             services, loops = build_account_services(
                 account_dir(self._data_dir, record.id),
                 clock=self._clock,
                 redactor=self._redactor,
                 env=self._env,
+                global_settings=global_settings,
             )
             self.register(Account(record=record, services=services, loops=loops))
 
@@ -162,3 +169,22 @@ class AccountRegistry:
         for account in self.all():
             if account.thread is not None:
                 account.thread.join(timeout=timeout)
+
+    def apply_global_settings(self, updates: dict) -> None:
+        """Rebuild every account's graph against a changed global setting.
+
+        `bandwidth_bytes_per_second` and `worker_threads` are global because
+        the resource they govern (one uplink, one machine) is shared by the
+        whole process, not owned by one account -- so a change to either one
+        has to reach every account's runtime graph, not just the account the
+        request that changed it happened to be looking at.
+
+        `rebuild_runtime` already carries each account's halt and pause state
+        across its own swap (see its docstring), so this cannot clear
+        someone's AUTH_INVALID, and each account's bandwidth deferrals are
+        released inside its own rebuild -- both exactly as they would be for
+        a single account's own settings save, just repeated once per account
+        here.
+        """
+        for account in self.all():
+            rebuild_runtime(account.services, settings=replace(account.services.settings, **updates))

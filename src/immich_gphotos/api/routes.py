@@ -12,6 +12,7 @@ from immich_gphotos.config import (
     Quality,
 )
 from immich_gphotos.services import Services
+from immich_gphotos.storage_keys import GLOBAL_SETTING_KEYS
 from immich_gphotos.storage_keys import SETTINGS_KEY as SETTING_KEY
 from immich_gphotos.sync.backfill import BACKFILL_CURSOR
 from immich_gphotos.sync.throttle import transfer_allowed
@@ -150,6 +151,24 @@ def retry(asset_id: str, request: Request) -> dict:
     return {"retrying": asset_id}
 
 
+def _settings_view(services: Services) -> dict:
+    """The one true shape of "settings" as reported to a client: read off the
+    live `Settings`, which already carries both the account half (quality,
+    albums_enabled, deletions_enabled) and the global half
+    (worker_threads, bandwidth_bytes_per_second) merged together by
+    `accounts.build._merged_settings` -- regardless of which of the two
+    on-disk rows each field actually lives in. Shared by `get_settings` and
+    `put_settings` so the PUT response and a follow-up GET always agree.
+    """
+    return {
+        "quality": services.settings.quality,
+        "albums_enabled": services.settings.albums_enabled,
+        "deletions_enabled": services.settings.deletions_enabled,
+        "worker_threads": services.settings.worker_threads,
+        "bandwidth_bytes_per_second": services.settings.bandwidth_bytes_per_second,
+    }
+
+
 @router.get("/settings")
 def get_settings(request: Request) -> dict:
     """Report the settings the running service is actually using.
@@ -161,15 +180,12 @@ def get_settings(request: Request) -> dict:
     while a stale in-memory loop kept trashing Google items. `put_settings`
     now rebuilds the live runtime graph on every write, so `services.settings`
     is always the truth and nothing needs to be read back from storage here.
+
+    Splitting global keys into the control database (Task 5) does not change
+    any of that: `services.settings` is still the one merged, live truth --
+    it is simply assembled from two rows instead of one now.
     """
-    services: Services = request.state.services
-    return {
-        "quality": services.settings.quality,
-        "albums_enabled": services.settings.albums_enabled,
-        "deletions_enabled": services.settings.deletions_enabled,
-        "worker_threads": services.settings.worker_threads,
-        "bandwidth_bytes_per_second": services.settings.bandwidth_bytes_per_second,
-    }
+    return _settings_view(request.state.services)
 
 
 @router.put("/settings")
@@ -177,17 +193,55 @@ def put_settings(patch: SettingsPatch, request: Request) -> dict:
     services: Services = request.state.services
     require_deletion_confirmation(patch, currently_enabled=services.settings.deletions_enabled)
     updates = resolve_settings_updates(patch, exclude={"confirm_deletions"})
-    stored = dict(services.settings_repo.get(SETTING_KEY) or {})
-    stored.update(updates)
-    services.settings_repo.set(SETTING_KEY, stored)
-    if updates:
-        # Live swap: rebuild the runtime graph (Runtime, Reconciler, the
-        # DeletionSweeper, ...) against the new Settings and hand it to the
-        # background loop in place, so e.g. deletions_enabled=False stops the
-        # sweeper on its next pass instead of only after a manual restart.
+
+    # Route each changed key to the database that owns it: quality,
+    # albums_enabled and deletions_enabled are this account's alone; the
+    # bandwidth cap and worker-thread count answer for one uplink/one
+    # machine shared by every account, so they belong in the control
+    # database and must reach every account's runtime, not just this
+    # request's.
+    account_updates = {k: v for k, v in updates.items() if k not in GLOBAL_SETTING_KEYS}
+    global_updates = {k: v for k, v in updates.items() if k in GLOBAL_SETTING_KEYS}
+
+    if account_updates:
+        stored = dict(services.settings_repo.get(SETTING_KEY) or {})
+        stored.update(account_updates)
+        services.settings_repo.set(SETTING_KEY, stored)
+
+    registry = request.app.state.accounts
+    if global_updates:
+        stored_global = dict(registry.settings.get(SETTING_KEY) or {})
+        stored_global.update(global_updates)
+        registry.settings.set(SETTING_KEY, stored_global)
+
+    # Live swap: rebuild the runtime graph (Runtime, Reconciler, the
+    # DeletionSweeper, ...) against the new Settings and hand it to the
+    # background loop in place, so e.g. deletions_enabled=False stops the
+    # sweeper on its next pass instead of only after a manual restart.
+    #
+    # A patch can touch both scopes in one request (e.g. quality alongside
+    # bandwidth_bytes_per_second). `apply_global_settings` rebuilds every
+    # account, including this request's -- so when there is also an
+    # account-scoped change to apply, this account must not be rebuilt a
+    # second time afterwards (tearing its graph down and back up twice for
+    # one request) and the account-scoped change must not be silently
+    # dropped either. Rebuilding every *other* account for the global half
+    # and this one once, with both halves together, gets exactly one
+    # rebuild per account out of a single request.
+    if account_updates and global_updates:
+        for account in registry.all():
+            if account.services is not services:
+                rebuild_runtime(
+                    account.services, settings=replace(account.services.settings, **global_updates)
+                )
         rebuild_runtime(services, settings=replace(services.settings, **updates))
+    elif global_updates:
+        registry.apply_global_settings(global_updates)
+    elif account_updates:
+        rebuild_runtime(services, settings=replace(services.settings, **account_updates))
+
     services.events.add("info", "settings updated")
-    return stored
+    return _settings_view(services)
 
 
 @router.post("/backfill/start")
