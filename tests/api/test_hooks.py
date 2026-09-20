@@ -41,6 +41,7 @@ def payload(checksum) -> dict:
 @pytest.fixture
 def client(tmp_path):
     from immich_gphotos.accounts.registry import Account, AccountRegistry
+    from immich_gphotos.storage_keys import LEGACY_WEBHOOK_ACCOUNT_KEY
 
     conn = connect(tmp_path / "t.db")
     clock = FakeClock()
@@ -64,6 +65,11 @@ def client(tmp_path):
         account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"
     )
     registry.register(Account(record=record, services=services, loops=None))
+    # RULING R15: `receive_legacy` 401s on an unset legacy key rather than
+    # falling back to `registry.default()` -- a single-account fixture only
+    # models a real install (which the migration always stamps this key for)
+    # if it stamps the key too.
+    registry.settings.set(LEGACY_WEBHOOK_ACCOUNT_KEY, "acct-1")
     return TestClient(create_app(registry)), assets
 
 
@@ -274,6 +280,32 @@ def test_a_dead_legacy_account_is_a_clean_401_not_a_500(two_account_http, webhoo
 
     assert response.status_code == 401
     assert second.services.assets.get("asset-6") is None
+
+
+def test_an_unset_legacy_key_is_a_401_not_a_default_account_fallback(two_account_http, webhook_payload):
+    """RULING R15: an unset `LEGACY_WEBHOOK_ACCOUNT_KEY` means no v1->v2
+    migration ever ran on this data directory, so there is no workflow
+    anywhere pointed at this bare path to honor -- not "fall back to
+    whichever account is first". `first` is `registry.default()` here (the
+    first account `two_account_http` created), so presenting *its own,
+    correct* secret would succeed under a `... or registry.default()`
+    fallback; it must not.
+    """
+    from immich_gphotos.storage_keys import LEGACY_WEBHOOK_ACCOUNT_KEY
+
+    client, first, second = two_account_http
+    registry = client.app.state.accounts
+    registry.settings.set(LEGACY_WEBHOOK_ACCOUNT_KEY, None)
+
+    response = client.post(
+        "/hooks/immich",
+        json=webhook_payload("asset-7"),
+        headers={"X-IGP-Secret": first.services.webhook_secret},
+    )
+
+    assert response.status_code == 401
+    assert first.services.assets.get("asset-7") is None
+    assert second.services.assets.get("asset-7") is None
 
 
 def test_unparseable_payload_warns_the_right_accounts_event_log(two_account_http):

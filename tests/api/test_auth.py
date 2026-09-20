@@ -7,6 +7,7 @@ from immich_gphotos.api.auth import PASSWORD_KEY, SESSION_COOKIE, hash_password,
 from immich_gphotos.clock import FakeClock
 from immich_gphotos.config import Settings
 from immich_gphotos.services import Services
+from immich_gphotos.storage_keys import LEGACY_WEBHOOK_ACCOUNT_KEY
 from immich_gphotos.store.albums import AlbumRepo
 from immich_gphotos.store.assets import AssetRepo
 from immich_gphotos.store.db import connect
@@ -41,6 +42,11 @@ def rig(tmp_path):
         account_id="acct-1", label="Default", created_at="2026-09-20T10:00:00Z"
     )
     registry.register(Account(record=record, services=services, loops=None))
+    # RULING R15: `receive_legacy` 401s on an unset legacy key rather than
+    # falling back to `registry.default()` -- a single-account fixture only
+    # models a real install (which the migration always stamps this key for)
+    # if it stamps the key too. See api/hooks.py::receive_legacy.
+    registry.settings.set(LEGACY_WEBHOOK_ACCOUNT_KEY, "acct-1")
     return TestClient(create_app(registry), follow_redirects=False), registry
 
 

@@ -61,9 +61,18 @@ def configured_services(rig_services):
 @pytest.fixture
 def rig_registry(tmp_path, rig_services):
     """A registry holding exactly one account, backed by the same
-    `rig_services` graph the older fixtures build by hand."""
+    `rig_services` graph the older fixtures build by hand.
+
+    RULING R15: a single-account install, in production, is always one the
+    v1->v2 migration produced -- and the migration always writes
+    `LEGACY_WEBHOOK_ACCOUNT_KEY`. `receive_legacy` (api/hooks.py) no longer
+    falls back to `registry.default()` when that key is unset, so a fixture
+    claiming to model a single-account install has to set it too, or it is
+    modeling a state production never reaches.
+    """
     from immich_gphotos.accounts.registry import Account, AccountRegistry
     from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
+    from immich_gphotos.storage_keys import LEGACY_WEBHOOK_ACCOUNT_KEY
 
     registry = AccountRegistry(tmp_path / "data", env={})
     record = registry.accounts_repo.add(
@@ -71,6 +80,7 @@ def rig_registry(tmp_path, rig_services):
     )
     registry.register(Account(record=record, services=rig_services, loops=None))
     registry.settings.set(PASSWORD_KEY, hash_password("test-password"))
+    registry.settings.set(LEGACY_WEBHOOK_ACCOUNT_KEY, "acct-1")
     return registry
 
 

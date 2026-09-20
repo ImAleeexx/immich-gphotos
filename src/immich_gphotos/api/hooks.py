@@ -89,27 +89,38 @@ async def receive_legacy(request: Request) -> dict:
     merely "the first account" -- `default()` and "the legacy account"
     agree only by coincidence on an install with exactly one account.
 
-    Two different kinds of "no legacy id" are handled differently on
-    purpose. If the key was never written at all (`legacy_account_id()` is
-    `None` -- a fresh multi-account install, or a control database that
-    predates this setting), there is no specific account to have chosen
-    over any other, so `default()` -- whichever account happens to exist --
-    is as good an answer as any, and is what every existing single-account
-    deployment already depends on this route doing. But once the key HAS
-    been set, it names one account and no other; falling back to
-    `default()` when THAT account is gone (Task 8's
-    `test_remove_leaves_a_dead_legacy_webhook_key_solvable_by_task_7` is
-    exactly this state) would silently reroute a delivery meant for the
-    account that was removed into whichever different account happens to
-    remain -- a misdelivery into someone else's library, not a graceful
-    degrade. A 401 is the only acceptable outcome there, same reasoning as
-    the 401-not-404 comment above: this route is unauthenticated by design,
-    so "no account to check the secret against" and "wrong secret" are
+    RULING R15: there is no `registry.default()` fallback here, for either
+    kind of "no legacy id" -- a dead one (`legacy_account_id()` returns an
+    id `registry.get` no longer knows, e.g. Task 8's
+    `test_remove_leaves_a_dead_legacy_webhook_key_solvable_by_task_7`) or an
+    absent one (`legacy_account_id()` is `None`, because no v1->v2 migration
+    ever ran on this data directory). Both are a clean 401.
+
+    This route exists for exactly one reason: to keep a workflow that
+    already exists inside someone's Immich, from before multi-account,
+    pointed at a real account. The migration that creates that situation
+    *always* writes `LEGACY_WEBHOOK_ACCOUNT_KEY` (see
+    `accounts.migrate.ensure_control_db`) -- so an install where the key was
+    never set is not a migrated single-account install with a workflow to
+    honor, it is a fresh multi-account install (or a hand-built test
+    registry) with nothing bound to this URL at all. Falling back to
+    `default()` in that case does not recover anything real; it manufactures
+    a standing alias from the bare path to "whichever account is first by
+    position" that nothing in production ever asked for and that silently
+    retargets to a different library the moment that account is removed or
+    the registration order changes -- the exact class of misrouting this
+    route exists to prevent, just reached from the other end. (It is
+    secret-gated either way, so nothing can be queued without the target
+    account's own secret -- this is a design call against an alias nothing
+    needs, not a vulnerability fix.) A future change here must not
+    reintroduce `or registry.default()`: both "dead" and "absent" get the
+    same 401, and the 401-not-404 reasoning above applies equally -- "no
+    account to check the secret against" and "wrong secret" are
     deliberately indistinguishable from the outside.
     """
     registry = request.app.state.accounts
     account_id = registry.legacy_account_id()
-    account = registry.default() if account_id is None else registry.get(account_id)
+    account = registry.get(account_id) if account_id else None
     if account is None:
         raise HTTPException(status_code=401, detail="bad secret")
     return await _receive(account.services, request)
