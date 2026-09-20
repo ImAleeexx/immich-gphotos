@@ -481,11 +481,18 @@ class AccountRegistry:
         because there is no version of that at all.
         """
         with self._lock:
-            # Held across the join (finding I2). That can block a
-            # concurrent `create` for the join's 5 seconds, which is the
-            # correct trade: the alternative is a `create` landing in the
-            # middle of this teardown and building its graph against
-            # limiters this method is about to walk past.
+            # Held across the join (finding I2) and, now, across
+            # `immich.delete_workflow` above it. The join alone is ~5 seconds,
+            # but `delete_workflow` is the dominant term: `immich/client.py`
+            # gives it a 60-second timeout with no retry, and removal is most
+            # often performed *because* that Immich server is broken or
+            # unreachable in the first place (see this method's docstring) --
+            # so the realistic worst case for this lock is ~65 seconds, during
+            # which `create`, `apply_global_settings` and
+            # `rebuild_shared_limiters` all block. That is the correct trade:
+            # the alternative is a `create` landing in the middle of this
+            # teardown and building its graph against limiters this method is
+            # about to walk past.
             account = self._accounts.pop(account_id, None)
             if account is None:
                 return None
@@ -578,6 +585,22 @@ class AccountRegistry:
             try:
                 self.accounts_repo.remove(account_id)
             finally:
+                if not stopped:
+                    # Reported regardless of `delete_data`: the join timing out
+                    # means the account's sqlite connection was left open (see
+                    # the `stopped` gate above the close, further up) and its
+                    # loop thread is still running, whether or not the admin
+                    # also asked to delete the data directory. `stop` is already
+                    # set, so the loop exits on its own at the end of its
+                    # current iteration -- no restart is required for that.
+                    join_warning = (
+                        "Removed the account, but its background loop was still busy 5 seconds "
+                        "after being asked to stop (most likely mid-upload) and is still running. "
+                        "Its database connection was left open rather than risk closing it "
+                        "underneath the loop; it will be released once the loop exits on its own "
+                        "at the end of its current iteration -- no restart is required."
+                    )
+                    warning = f"{warning} {join_warning}" if warning else join_warning
                 if delete_data:
                     if stopped:
                         shutil.rmtree(account_dir(self._data_dir, account_id), ignore_errors=True)
@@ -602,12 +625,11 @@ class AccountRegistry:
                         # that point on (the same leftover a crash mid-removal
                         # leaves -- see the ordering discussion above).
                         data_warning = (
-                            "Removed the account, but its data directory was NOT deleted: its "
-                            "background loop was still busy 5 seconds after being asked to stop "
-                            "(most likely mid-upload) and deleting files underneath it would "
-                            "either be silently undone or silently fail. Delete "
-                            f"{account_dir(self._data_dir, account_id)} by hand once the "
-                            "container has been restarted."
+                            "Its data directory was NOT deleted either: deleting files "
+                            "underneath a still-running loop would either be silently undone "
+                            "or silently fail. Delete "
+                            f"{account_dir(self._data_dir, account_id)} by hand once its "
+                            "loop has exited -- no restart is required."
                         )
                         warning = f"{warning} {data_warning}" if warning else data_warning
             return warning

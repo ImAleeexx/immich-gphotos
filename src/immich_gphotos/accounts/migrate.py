@@ -107,13 +107,19 @@ def ensure_control_db(data_dir: Path, *, now: str) -> str | None:
     tmp = data_dir / f"{CONTROL_DB_NAME}.tmp"
     # FINDING M2: the sidecars go too, not just the main file. `connect_control`
     # opens in WAL mode, so a previous run that died before the rename can leave
-    # `control.db.tmp-wal` (and `-shm`) behind. Unlinking only `control.db.tmp`
-    # and then opening a fresh database at that same path hands SQLite a brand
-    # new main file next to someone else's write-ahead log, which it will
-    # happily recover *into* the new database -- rows from a half-finished
-    # earlier attempt appearing in what is about to become the real control
-    # database. This is the one irreversible path in the design (`tmp.replace`
-    # below is the commit point), so it starts from nothing at all.
+    # `control.db.tmp-wal` (and `-shm`) behind. This cleanup is defensive
+    # hygiene rather than a fix for an observed bug: tested directly against
+    # SQLite 3.53.0 by replaying this exact sequence -- kill a writer to leave
+    # a hot `-wal`, unlink only `control.db.tmp`, then open a fresh database at
+    # that same path -- nothing recovers. SQLite creates a zero-length main
+    # file, reads no WAL journal mode from it, and discards the stale log. A
+    # near-neighbour ordering (create a fresh WAL-mode database first, *then*
+    # drop a stale `-wal` beside it, then reopen) does recover rows from it, so
+    # the hazard class is real, just one ordering detail away from this code
+    # path. Unlinking the sidecars up front removes that ambiguity rather than
+    # closing a demonstrated hole. This is the one irreversible path in the
+    # design (`tmp.replace` below is the commit point), so it starts from
+    # nothing at all.
     for path in (tmp, *(data_dir.glob(f"{CONTROL_DB_NAME}.tmp-*"))):
         path.unlink(missing_ok=True)
     control_conn = connect_control(tmp)

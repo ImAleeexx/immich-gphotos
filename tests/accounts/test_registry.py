@@ -437,6 +437,39 @@ def test_remove_refuses_to_delete_data_under_a_loop_thread_that_would_not_stop(t
     real_thread.join(timeout=5.0)
 
 
+def test_remove_warns_on_a_timed_out_join_even_when_delete_data_is_false(tmp_path):
+    """FIX 2: before, a join timeout was only ever reported as part of the
+    `delete_data=True` "directory NOT deleted" warning, so `delete_data=False`
+    (the common case -- most removals are not also asking to wipe the
+    account's data) got no warning at all even though the connection was
+    just leaked and the loop thread is still running. The warning must fire
+    regardless of `delete_data`, and must not tell the admin a restart is
+    needed -- `stop` is already set, so the loop exits on its own."""
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+
+    class NeverStops:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):  # noqa: ANN001 - matches threading.Thread
+            return None
+
+    real_thread, account.thread = account.thread, NeverStops()
+
+    warning = registry.remove(account.id, delete_data=False)
+
+    assert warning is not None
+    assert "still busy" in warning
+    assert "container has been restarted" not in warning  # the stale, over-cautious claim
+    assert "no restart is required" in warning
+    # No directory-specific wording: delete_data was False, so there is no
+    # directory outcome to report.
+    assert "NOT deleted" not in warning
+
+    real_thread.join(timeout=5.0)
+
+
 def test_remove_reports_both_a_workflow_failure_and_an_undeleted_directory(tmp_path):
     """The R14 warning channel is append-only: an undeleted data directory
     must not overwrite a workflow that could not be deleted either."""
