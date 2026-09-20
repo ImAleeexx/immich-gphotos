@@ -158,17 +158,16 @@
         <label><input type="checkbox" name="deletions_enabled"> Propagate deletions</label>
         <p class="field__hint">When enabled, deleting an item in Immich moves the matching item in
           Google Photos to trash, where it stays recoverable for 60 days.</p>
-        <div class="field">
-          <label class="field__label" for="worker_threads">Worker threads</label>
-          <input class="input" id="worker_threads" type="number" name="worker_threads" min="1" max="16" value="2">
-        </div>
-        <div class="field">
-          <label class="field__label" for="bandwidth_bytes_per_second">
-            Bandwidth (bytes/sec, blank = unlimited, minimum 65536)
-          </label>
-          <input class="input" id="bandwidth_bytes_per_second" type="number"
-                 name="bandwidth_bytes_per_second" min="65536" inputmode="numeric">
-        </div>
+        <!-- FINDING I4 / Ruling R16: worker threads and the bandwidth cap are
+             deliberately NOT here. Both are global -- one uplink, one machine,
+             shared by every account (see storage_keys.GLOBAL_SETTING_KEYS) --
+             while this wizard configures exactly one account. An admin setting
+             up account #3 would reasonably read a field on this page as "for
+             account #3", and it never was: it is the cap for the whole
+             container. They live on /settings, under "All accounts", where the
+             grouping says so. -->
+        <p class="field__hint">Transfer speed and worker threads apply to every account at once,
+          so they live on the <a href="/settings">Settings</a> page rather than here.</p>
         <label><input type="checkbox" name="start_backfill" checked> Start backfilling existing assets now</label>
         <button type="submit" class="btn btn--primary">Save and finish</button>
       </form>
@@ -369,10 +368,11 @@ document.addEventListener("DOMContentLoaded", () => {
       quality: form.quality.value,
       albums_enabled: form.albums_enabled.checked,
       deletions_enabled: form.deletions_enabled.checked,
-      worker_threads: Number(form.worker_threads.value),
-      bandwidth_bytes_per_second: form.bandwidth_bytes_per_second.value
-        ? Number(form.bandwidth_bytes_per_second.value)
-        : null,
+      // No worker_threads / bandwidth_bytes_per_second: see the comment on the
+      // options panel above. Sending bandwidth_bytes_per_second: null here was
+      // not harmless either -- resolve_settings_updates reads an explicit null
+      // as "clear the cap", so finishing the wizard for a new account would
+      // have wiped the container-wide cap every other account is running under.
       start_backfill: form.start_backfill.checked,
     };
     if (form.deletions_enabled.checked) {

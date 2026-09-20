@@ -188,18 +188,35 @@ def get_settings(request: Request) -> dict:
     return _settings_view(request.state.services)
 
 
-@router.put("/settings")
-def put_settings(patch: SettingsPatch, request: Request) -> dict:
-    services: Services = request.state.services
-    require_deletion_confirmation(patch, currently_enabled=services.settings.deletions_enabled)
-    updates = resolve_settings_updates(patch, exclude={"confirm_deletions"})
+def apply_settings_updates(updates: dict[str, Any], *, services: Services, registry: Any) -> None:
+    """Persist and live-apply a resolved settings patch, routing each key to
+    the database whose scope owns it.
 
-    # Route each changed key to the database that owns it: quality,
-    # albums_enabled and deletions_enabled are this account's alone; the
-    # bandwidth cap and worker-thread count answer for one uplink/one
-    # machine shared by every account, so they belong in the control
-    # database and must reach every account's runtime, not just this
-    # request's.
+    RULING R16 -- this function exists because there are two routes that
+    accept a `SettingsPatch`, not one: `PUT /api/settings` here and
+    `POST /api/wizard/options` (`api.wizard.wizard_options`, whose
+    `WizardOptions` model *extends* `SettingsPatch` and therefore carries
+    `worker_threads` and `bandwidth_bytes_per_second` too). Those two have
+    now drifted three times over the same shared model -- most recently when
+    Task 5 split the global keys out into the control database and Task 6
+    moved limiter construction into `AccountRegistry`, and neither change
+    reached the wizard: it went on writing a global cap into the *account's*
+    settings row, rebuilding against a bucket nobody had rebuilt, and
+    reporting the result back as applied. Both routes must stay on this one
+    function. A third caller that accepts a `SettingsPatch` must use it too;
+    a route that re-implements the split below is the bug this ruling
+    closes, reintroduced.
+
+    `updates` is the output of `resolve_settings_updates` -- already
+    normalized for "omitted" versus "explicitly null". An empty `updates` is
+    a no-op: nothing is written and nothing is rebuilt.
+
+    Route each changed key to the database that owns it: quality,
+    albums_enabled and deletions_enabled are this account's alone; the
+    bandwidth cap and worker-thread count answer for one uplink/one machine
+    shared by every account, so they belong in the control database and must
+    reach every account's runtime, not just this request's.
+    """
     account_updates = {k: v for k, v in updates.items() if k not in GLOBAL_SETTING_KEYS}
     global_updates = {k: v for k, v in updates.items() if k in GLOBAL_SETTING_KEYS}
 
@@ -208,7 +225,6 @@ def put_settings(patch: SettingsPatch, request: Request) -> dict:
         stored.update(account_updates)
         services.settings_repo.set(SETTING_KEY, stored)
 
-    registry = request.app.state.accounts
     if global_updates:
         stored_global = dict(registry.settings.get(SETTING_KEY) or {})
         stored_global.update(global_updates)
@@ -252,6 +268,17 @@ def put_settings(patch: SettingsPatch, request: Request) -> dict:
         registry.apply_global_settings(global_updates)
     elif account_updates:
         rebuild_runtime(services, settings=replace(services.settings, **account_updates))
+
+
+@router.put("/settings")
+def put_settings(patch: SettingsPatch, request: Request) -> dict:
+    services: Services = request.state.services
+    require_deletion_confirmation(patch, currently_enabled=services.settings.deletions_enabled)
+    updates = resolve_settings_updates(patch, exclude={"confirm_deletions"})
+    # See `apply_settings_updates` (Ruling R16): the scope split, the writes
+    # and the exactly-once-per-account live swap all live there, shared with
+    # `api.wizard.wizard_options`, which posts the same model.
+    apply_settings_updates(updates, services=services, registry=request.app.state.accounts)
 
     services.events.add("info", "settings updated")
     return _settings_view(services)

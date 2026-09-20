@@ -279,3 +279,65 @@ def test_a_combined_scope_patch_also_gives_every_account_the_same_new_bucket_ins
     assert other.services.runtime._worker._bandwidth is new_bucket
     assert current.services.bandwidth is new_bucket
     assert other.services.bandwidth is new_bucket
+
+
+def test_the_wizard_options_route_routes_a_global_key_exactly_as_put_settings_does(
+    two_account_registry,
+):
+    """RULING R16 / finding C1. `POST /api/wizard/options` takes
+    `WizardOptions`, which extends `SettingsPatch` and therefore carries the
+    two global keys whatever the wizard page renders. It used to write
+    `updates` wholesale into the *account's* settings row and call
+    `rebuild_runtime` with whatever limiters that account already held --
+    so a bandwidth cap set through the wizard landed in the wrong database,
+    was never built into a `TokenBucket`, was never enforced by anyone, and
+    was still reported back as applied by `GET /api/settings` (because
+    `_merged_settings` falls back to the account copy when no global row
+    exists). It did not self-heal on restart either: `_build_limiters`
+    reads only the control row.
+
+    Both routes now go through `routes.apply_settings_updates`, so this
+    asserts the same four things `PUT /api/settings` is held to: the control
+    row holds the key, the account row does not, the registry actually built
+    a bucket, and every account's live Worker meters against that one
+    instance.
+    """
+    from immich_gphotos.api.app import create_app
+
+    client = TestClient(create_app(two_account_registry), follow_redirects=False)
+    assert client.post("/login", data={"password": "test-password"}).status_code == 303
+
+    current = two_account_registry.default()
+    other = two_account_registry.get("acct-2")
+    assert current.id == "acct-1" and other is not None
+
+    response = client.post("/api/wizard/options", json={"bandwidth_bytes_per_second": 1048576})
+    assert response.status_code == 200
+
+    assert two_account_registry.settings.get(SETTINGS_KEY) == {"bandwidth_bytes_per_second": 1048576}
+    assert "bandwidth_bytes_per_second" not in (current.services.settings_repo.get(SETTINGS_KEY) or {})
+
+    bucket = two_account_registry._bandwidth
+    assert bucket is not None
+    assert current.services.runtime._worker._bandwidth is bucket
+    assert other.services.runtime._worker._bandwidth is bucket
+
+
+def test_the_wizard_options_route_still_writes_an_account_key_to_the_account(two_account_registry):
+    """The other half of R16's split, through the same route: an
+    account-scoped key must stay in this account's own database and must not
+    reach the control database or any other account."""
+    from immich_gphotos.api.app import create_app
+
+    client = TestClient(create_app(two_account_registry), follow_redirects=False)
+    assert client.post("/login", data={"password": "test-password"}).status_code == 303
+
+    current = two_account_registry.default()
+    other = two_account_registry.get("acct-2")
+
+    assert client.post("/api/wizard/options", json={"quality": "saver"}).status_code == 200
+
+    assert current.services.settings_repo.get(SETTINGS_KEY) == {"quality": "saver"}
+    assert two_account_registry.settings.get(SETTINGS_KEY) in (None, {})
+    assert current.services.settings.quality == "saver"
+    assert other.services.settings.quality == "original"

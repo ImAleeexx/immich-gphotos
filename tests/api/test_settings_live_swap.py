@@ -134,11 +134,13 @@ def test_settings_page_no_longer_invites_zero_as_a_bandwidth_cap(tmp_path):
 
     expected = f'name="bandwidth_bytes_per_second" min="{MIN_BANDWIDTH_BYTES_PER_SECOND}"'
     assert expected in settings_page.text
-    assert expected in wizard_page.text
     assert 'name="bandwidth_bytes_per_second" min="0"' not in settings_page.text
-    assert 'name="bandwidth_bytes_per_second" min="0"' not in wizard_page.text
     assert 'name="bandwidth_bytes_per_second" min="1"' not in settings_page.text
-    assert 'name="bandwidth_bytes_per_second" min="1"' not in wizard_page.text
+    # The wizard used to render this field too, with the same floor pinned
+    # here. Finding I4 / Ruling R16 removed it: the cap is global (one
+    # uplink for the whole container) while the wizard configures one
+    # account, so the only floor it can get wrong now is no field at all.
+    assert 'name="bandwidth_bytes_per_second"' not in wizard_page.text
 
 
 def test_zero_bandwidth_cap_is_rejected_by_the_api(tmp_path):

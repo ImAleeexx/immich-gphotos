@@ -19,8 +19,12 @@ from dataclasses import replace
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from immich_gphotos.api.routes import SETTING_KEY as CONFIG_SETTING_KEY
-from immich_gphotos.api.routes import SettingsPatch, require_deletion_confirmation, resolve_settings_updates
+from immich_gphotos.api.routes import (
+    SettingsPatch,
+    apply_settings_updates,
+    require_deletion_confirmation,
+    resolve_settings_updates,
+)
 from immich_gphotos.composition import rebuild_runtime
 from immich_gphotos.gphotos.client import GpmcClient
 from immich_gphotos.immich.client import HttpImmichClient
@@ -188,11 +192,19 @@ def wizard_options(payload: WizardOptions, request: Request) -> dict:
     require_deletion_confirmation(payload, currently_enabled=services.settings.deletions_enabled)
     updates = resolve_settings_updates(payload, exclude={"start_backfill", "confirm_deletions"})
 
-    if updates:
-        stored = dict(services.settings_repo.get(CONFIG_SETTING_KEY) or {})
-        stored.update(updates)
-        services.settings_repo.set(CONFIG_SETTING_KEY, stored)
-        rebuild_runtime(services, settings=replace(services.settings, **updates))
+    # RULING R16: this route must not write or rebuild anything itself. It
+    # accepts `WizardOptions`, which extends `SettingsPatch` and so can carry
+    # the two globally-scoped keys (`worker_threads`,
+    # `bandwidth_bytes_per_second`) no matter what the wizard page renders --
+    # a client posts what it likes. Writing `updates` wholesale into this
+    # account's settings row is exactly how a bandwidth cap set here ended up
+    # in the wrong database, never built into a `TokenBucket`, never
+    # enforced, and still reported as applied by `GET /api/settings`.
+    # `apply_settings_updates` is the one place that splits by scope, writes
+    # each half where it belongs, rebuilds the shared limiters before any
+    # runtime swap, and rebuilds every account exactly once -- shared with
+    # `PUT /api/settings` so the two can never drift again.
+    apply_settings_updates(updates, services=services, registry=request.app.state.accounts)
 
     if payload.start_backfill:
         services.backfill.start()

@@ -5,29 +5,27 @@ in test_wizard.py; this file is about what actually reaches the browser.
 """
 
 
-def test_the_wizard_keeps_the_bandwidth_floor_verbatim(http):
-    """tests/api/test_settings_live_swap.py pins this exact string, attribute
-    order included. Restated here so a wizard rewrite fails loudly and
-    locally rather than in an unrelated module.
+def test_the_wizard_does_not_offer_the_two_global_settings(http):
+    """FINDING I4 / Ruling R16: `worker_threads` and
+    `bandwidth_bytes_per_second` are global -- one uplink, one machine,
+    shared by every account -- and the wizard configures exactly one
+    account. Rendering them here told an admin adding account #3 that they
+    were configuring account #3's transfer speed, which was never true; and
+    because the page submitted a blank bandwidth field as an explicit null,
+    finishing the wizard also cleared whatever cap the container was
+    already running under. Both fields belong to /settings, under "All
+    accounts" (see tests/api/test_settings_page.py, which pins the floors
+    there).
 
-    The constraint is scoped to the bandwidth field: `min="1"` is the
-    correct, separate floor for `worker_threads` (MIN_WORKER_THREADS), so
-    asserting `'min="1"' not in body` unscoped would fail the moment that
-    field carried its own, legitimate minimum -- as it should.
+    This replaces the two tests that used to pin those fields' floors in
+    this file: the correct floor for a field that must not exist is no
+    field.
     """
     body = http.get("/wizard").text
-    assert 'name="bandwidth_bytes_per_second" min="65536"' in body
-    assert 'name="bandwidth_bytes_per_second" min="0"' not in body
-    assert 'name="bandwidth_bytes_per_second" min="1"' not in body
-
-
-def test_the_wizard_keeps_the_worker_threads_floor(http):
-    """settings.html has always rendered min="1" max="16" for worker_threads
-    (the server enforces MIN_WORKER_THREADS = 1); the wizard's own
-    worker_threads field must match, not just default to something in
-    range."""
-    body = http.get("/wizard").text
-    assert 'name="worker_threads" min="1" max="16" value="2"' in body
+    assert 'name="bandwidth_bytes_per_second"' not in body
+    assert 'name="worker_threads"' not in body
+    # ...and the user is told where they did go, rather than left to guess.
+    assert 'href="/settings"' in body
 
 
 def test_the_wizard_renders_a_step_rail(http):
