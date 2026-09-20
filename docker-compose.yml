@@ -19,6 +19,9 @@ services:
       # the mount is present but shouldn't be trusted as the live library):
       # IGP_ALLOW_DIRECT_READS: "false"
     volumes:
+      # Holds control.db (the admin password, session and shared settings)
+      # plus accounts/<id>/ for each account's own database and credentials.
+      # See "Multiple accounts" and "Security" in the README.
       - ./data:/data
       # Optional but recommended when Immich runs on this host: with read-only
       # access to its library, at the SAME path Immich's own container sees it

@@ -141,6 +141,34 @@ Treat that string like a password — it can't be rotated easily. This service r
 
 Settings changed later take effect immediately — no restart. That includes work already queued: changing or clearing the bandwidth cap releases any uploads that were deferred to wait out the old cap, so they are re-measured against the new one instead of serving out a sentence the cap they were charged under no longer justifies.
 
+You run this wizard once per account — see [Multiple accounts](#multiple-accounts) below.
+
+## Multiple accounts
+
+One account is one Immich library mirrored to one Google Photos library: its own Immich API key, its own Google `auth_data`, its own queue, and its own background loop. A household backing up three people's Immich users to three separate Google accounts runs three accounts in this one container, all managed from the single admin login you set on first boot.
+
+Add one from **Accounts** in the nav: give it a label and you're dropped straight into the setup wizard for it. That wizard needs a fresh Immich API key and a fresh `auth_data` for this account — not the ones you used for another one. Both are inherently per-person: Immich API keys are minted by whoever is logged into Immich as that user, so an admin cannot create one on someone else's behalf, and `auth_data` comes off whichever Google identity the browser credential wizard (or the by-hand steps) was run against. There's no shortcut around running each step once per account.
+
+Every account gets its own webhook URL, `http://<host>:8080/hooks/immich/<account id>`. The wizard's Workflow step fills in the right one automatically for whichever account you're currently setting up, so you never have to look up or copy an id by hand.
+
+The switcher in the nav picks which account you're looking at; Settings, Failures and Diagnostics all follow it. Quality, album sync and deletions are per account — each library keeps its own choice. Worker threads and the bandwidth cap are global instead: one uplink and one machine are shared by every account on the install, so changing either from any account's Settings page changes it for all of them.
+
+To remove an account, use **Remove…** on the Accounts page and type its label back to confirm. This stops its backups and forgets its queue; it never deletes anything from Google Photos. It also tries to delete the account's workflow inside Immich, but that part is best effort — if Immich is unreachable or the API key is already dead, the removal still completes and the page tells you to delete the workflow by hand instead (left alone, it keeps posting into a webhook nothing answers anymore). A separate checkbox lets you also delete the account's data on disk; leave it unchecked to keep the database around.
+
+## Upgrading from a single-account install
+
+Upgrading the container image is enough on its own — there's no migration command to run. The first boot after the upgrade adopts your existing database as an account named **Default**, keeping your admin password, your current login session, and your configured bandwidth cap exactly as they were. The workflow already registered in Immich keeps posting to the same bare `/hooks/immich` URL it always has, so there's nothing to change on the Immich side either.
+
+That bare URL stays bound to the account the migration adopted for as long as the container runs — it doesn't move if you later remove that account or add others. Any account you add after upgrading gets its own `/hooks/immich/<account id>` URL, same as on a fresh install.
+
+## Security
+
+Every account's Immich API key and Google `auth_data` live in the same `./data` volume, behind the one admin password you set on first boot. There is no wall between accounts inside that volume: anyone who can read the volume's files, or who knows the admin password, can act as every account configured on this install, not just one.
+
+That matters most for `auth_data`. It isn't a scoped, revocable "upload to this app" token — it's the credential an Android device uses to authenticate to Google Photos as a full account, the same access the Google Photos app on your phone has. Whoever holds it can read, upload to, or trash that Google account's library, in full.
+
+Per-account encryption at rest isn't offered, and it isn't a gap the project intends to close later: this service exists to keep syncing in the background while nobody is logged in, so the process has to be able to decrypt every stored credential on its own, without a person unlocking anything first. A vault that only opens for a logged-in admin would defeat that. So the real boundary here is the host, not the app: keep `./data` readable only by the account this container runs as, protect any backup of it as carefully as you'd protect the credentials themselves, and treat the admin password as what it actually is — the single key to every Google and Immich account behind it.
+
 ## Settings
 
 | Setting | What it does |
@@ -148,8 +176,8 @@ Settings changed later take effect immediately — no restart. That includes wor
 | **Quality** | Original quality without touching your storage quota (the default), Storage Saver, or counted against quota. |
 | **Albums** | Mirror Immich albums into Google Photos. |
 | **Deletions** | Propagate deletions to Google's trash. Off by default — see below. |
-| **Worker threads** | How many uploads run concurrently. |
-| **Bandwidth cap** | Upload throughput limit for metered or shared connections. Leave blank for no limit. Shapes long-run average throughput, not the instantaneous rate — see below. |
+| **Worker threads** | How many uploads run concurrently. Shared by every account — see [Multiple accounts](#multiple-accounts). |
+| **Bandwidth cap** | Upload throughput limit for metered or shared connections. Leave blank for no limit. Shapes long-run average throughput, not the instantaneous rate — see below. Shared by every account — see [Multiple accounts](#multiple-accounts). |
 
 Schedule window, content filters (size caps, RAW, tags, album allowlist) and retry behaviour exist in the engine — the engine correctly gates transfer on a configured window and applies sensible defaults for the rest — but are not yet exposed for editing in this release.
 
