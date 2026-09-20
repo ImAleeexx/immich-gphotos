@@ -106,12 +106,19 @@ def _merged_settings(immich_url: str, stored: object, stored_global: object = No
     Nothing else builds a `Settings` from either row, so without this every
     change made in the UI is silently lost on the next restart.
 
-    A global value always wins over an account's copy of the same key: once
-    a real global row exists, the account's copy is dead weight left over
-    from before the split (the migration deliberately does not scrub it --
-    see `accounts.migrate.ensure_control_db` -- so it still counts as a
-    fallback below for a database that has not been migrated at all, i.e.
-    `stored_global` is empty/absent).
+    Precedence is per key, not per row: for each of the two global keys, a
+    valid value found in `stored_global` wins over whatever `stored` has for
+    that same key; a key that is missing from, or invalid in, `stored_global`
+    falls back to `stored`'s copy instead of being left unset. That fallback
+    is what a database not yet through the split relies on (`stored_global`
+    is empty/absent there, so both global keys come from `stored`). In
+    practice a *partial* global row -- one global key present, the other
+    still only in `stored` -- never actually happens: `accounts.migrate.
+    ensure_control_db` moves both global keys into the control database in
+    one write, so a migrated database either has both there or (pre-split)
+    neither. But that is a property of the migration, not of this function --
+    a hand-edited or partially-written control row is still resolved
+    correctly key by key, not row by row.
 
     Both rows are user-writable JSON, so this is defensive throughout: an
     unknown key or a value of the wrong type/range is ignored rather than

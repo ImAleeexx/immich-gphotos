@@ -5,6 +5,8 @@ uplink, one machine, shared by the whole process) and live in the control
 database instead -- see `storage_keys.GLOBAL_SETTING_KEYS`.
 """
 
+from fastapi.testclient import TestClient
+
 from immich_gphotos.storage_keys import SETTINGS_KEY
 
 
@@ -127,3 +129,72 @@ def test_apply_global_settings_rebuilds_every_account(tmp_path):
     for account in registry.all():
         assert account.services.settings.worker_threads == 9
         assert account.services.runtime._settings.worker_threads == 9
+
+
+def test_a_combined_patch_through_the_real_route_reaches_the_other_account_correctly(
+    two_account_registry, monkeypatch
+):
+    """Every other test in this file drives `PUT /api/settings` against a
+    single-account registry (`rig_registry`), so the `for account in
+    registry.all(): if account.services is not services` branch in
+    `put_settings` -- the one piece of this task's routing that only matters
+    once a second account exists -- never actually runs anywhere else. This
+    is the one test that puts a second, real account behind the route and
+    checks all three things that branch has to get right at once:
+
+    1. the *other* account picks up the global half (bandwidth_bytes_per_second);
+    2. the *other* account does NOT pick up the account-scoped half (quality) --
+       proving the loop passes only `global_updates`, not the whole patch;
+    3. every account is rebuilt exactly once for this one request -- proving
+       there is no double rebuild of the current account. This assertion is
+       the one that actually distinguishes this routing from the brief's
+       literal (and double-rebuilding) version: without it, a version that
+       rebuilds the current account twice would still pass 1 and 2.
+    """
+    import immich_gphotos.accounts.registry as registry_module
+    import immich_gphotos.api.routes as routes_module
+    from immich_gphotos.api.app import create_app
+    from immich_gphotos.composition import rebuild_runtime as original
+
+    # `put_settings` calls `rebuild_runtime` directly for the account-scoped
+    # path; `apply_global_settings` (in accounts/registry.py) calls its own
+    # `from ... import rebuild_runtime` for the global path. Both modules
+    # hold their own bound reference to the same underlying function, copied
+    # in at import time, so both must be patched to the same counting
+    # wrapper -- patching only one would miss any rebuild that goes through
+    # the other, exactly the gap that let this regression through review the
+    # first time.
+    calls: list[object] = []
+
+    def counting_rebuild(services, **kwargs):
+        calls.append(services)
+        return original(services, **kwargs)
+
+    monkeypatch.setattr(routes_module, "rebuild_runtime", counting_rebuild)
+    monkeypatch.setattr(registry_module, "rebuild_runtime", counting_rebuild)
+
+    client = TestClient(create_app(two_account_registry), follow_redirects=False)
+    assert client.post("/login", data={"password": "test-password"}).status_code == 303
+
+    current = two_account_registry.default()
+    other = two_account_registry.get("acct-2")
+    assert current.id == "acct-1"
+    assert other is not None and other.services is not current.services
+
+    response = client.put("/api/settings", json={"quality": "saver", "bandwidth_bytes_per_second": 1048576})
+    assert response.status_code == 200
+
+    # The account the request was looking at: both halves land.
+    assert current.services.settings.quality == "saver"
+    assert current.services.settings.bandwidth_bytes_per_second == 1048576
+
+    # The other account: the global half reaches it, the account-scoped half
+    # never does -- it keeps its own default, not the current account's value.
+    assert other.services.settings.bandwidth_bytes_per_second == 1048576
+    assert other.services.settings.quality == "original"
+
+    # Neither account was skipped, and the current account was not rebuilt
+    # twice (once for its own account-scoped change, again inside a
+    # rebuild-every-account pass for the global change).
+    assert calls.count(current.services) == 1
+    assert calls.count(other.services) == 1

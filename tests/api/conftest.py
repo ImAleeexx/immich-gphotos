@@ -72,6 +72,37 @@ def rig_registry(tmp_path, rig_services):
 
 
 @pytest.fixture
+def two_account_registry(tmp_path):
+    """A registry holding two real accounts, each with its own on-disk
+    `Services` graph (built via `build_account_services`, not the
+    `rig_services` stub-runtime one `rig_registry` wraps) -- for tests that
+    must prove a routing decision reaches, or correctly does not reach, an
+    account other than the one a request is looking at. `registry.default()`
+    returns "acct-1", the first one registered.
+
+    This is the registry-level fixture only, deliberately with no
+    authenticated-client wrapper of its own: Task 8 is adding a
+    `two_account_http` fixture for the webhook-routing work, with whatever
+    shape that needs, and a same-named fixture here would collide with it.
+    A caller that needs an authenticated client over this registry builds
+    one the way `_authenticated` does, inline.
+    """
+    from immich_gphotos.accounts.build import build_account_services
+    from immich_gphotos.accounts.registry import Account, AccountRegistry
+    from immich_gphotos.api.auth import PASSWORD_KEY, hash_password
+
+    registry = AccountRegistry(tmp_path / "registry", env={})
+    for account_id in ("acct-1", "acct-2"):
+        record = registry.accounts_repo.add(
+            account_id=account_id, label=account_id, created_at="2026-09-20T10:00:00Z"
+        )
+        services, loops = build_account_services(tmp_path / account_id, env={})
+        registry.register(Account(record=record, services=services, loops=loops))
+    registry.settings.set(PASSWORD_KEY, hash_password("test-password"))
+    return registry
+
+
+@pytest.fixture
 def empty_registry(tmp_path):
     """A registry with zero accounts, as a fresh install looks before anyone
     has added one -- the state Task 9's "add account" flow starts from."""
