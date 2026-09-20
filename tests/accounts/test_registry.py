@@ -1,3 +1,5 @@
+import pytest
+
 from immich_gphotos.accounts.control import CONTROL_DB_NAME
 from immich_gphotos.accounts.migrate import LEGACY_DB_NAME, account_dir
 from immich_gphotos.accounts.registry import AccountRegistry
@@ -234,6 +236,105 @@ def test_remove_reports_a_missing_workflow_client_rather_than_silently_skipping(
 
     assert warning is not None
     assert "wf-1" in warning
+
+
+# --- Ruling R14: a close-phase failure must not undo, or fail to report,
+# a removal that actually completed underneath it. -------------------------
+
+
+def test_remove_survives_a_runtime_close_failure_and_warns_instead_of_raising(tmp_path):
+    """By the time `Runtime.close()` runs, the account is already popped
+    from the registry and its thread already stopped -- the removal has, in
+    every observable way, already happened. A raise from `close()` must not
+    turn that into an exception the caller has to handle as if nothing was
+    removed: it is folded into the warning channel, and the removal itself
+    -- registry, control database, and (with delete_data=True) the
+    directory -- must still go all the way through."""
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+
+    class BrokenRuntime:
+        def close(self):
+            raise RuntimeError("pool wedged")
+
+    account.services.runtime = BrokenRuntime()
+
+    warning = registry.remove(account.id, delete_data=True)
+
+    assert warning is not None
+    assert "pool wedged" in warning
+    assert registry.get(account.id) is None
+    assert registry.accounts_repo.get(account.id) is None
+    assert not account_dir(tmp_path, account.id).exists()
+
+
+def test_remove_survives_an_outgoing_client_close_failure_and_warns_instead_of_raising(tmp_path):
+    """Same as above, one step later: `_close_outgoing_immich_client` (via
+    the outgoing client's own `close()`) is the second thing that can raise
+    in the same best-effort window, and must be handled exactly the same
+    way."""
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+
+    class BrokenClient:
+        def close(self):
+            raise RuntimeError("socket already closed")
+
+    account.services.immich = BrokenClient()
+
+    warning = registry.remove(account.id, delete_data=True)
+
+    assert warning is not None
+    assert "socket already closed" in warning
+    assert registry.get(account.id) is None
+    assert registry.accounts_repo.get(account.id) is None
+    assert not account_dir(tmp_path, account.id).exists()
+
+
+def test_remove_reports_both_a_workflow_and_a_close_failure_without_losing_either(tmp_path):
+    """When the workflow deletion *and* a close both fail, the admin must
+    see both -- one must not silently overwrite the other."""
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+    account.services.workflow_id = "wf-1"
+
+    class Broken:
+        def delete_workflow(self, workflow_id):
+            raise ImmichError("gone")
+
+        def close(self):
+            raise RuntimeError("socket already closed")
+
+    account.services.immich = Broken()
+
+    warning = registry.remove(account.id, delete_data=False)
+
+    assert warning is not None
+    assert "wf-1" in warning
+    assert "socket already closed" in warning
+
+
+def test_remove_lets_a_control_database_failure_propagate_but_still_deletes_the_directory(tmp_path):
+    """`accounts_repo.remove` is the one failure in this method that is NOT
+    folded into a warning: if it raises, the control-database row genuinely
+    still exists, so the removal genuinely did not complete, and a raised
+    exception (a 500 at the route layer) is the honest outcome -- unlike the
+    close failures above, this one must not be silently absorbed. Its
+    `delete_data` `rmtree` must still run regardless, in its own nested
+    `finally`, so a locked control database does not also cancel a directory
+    deletion the admin explicitly asked for."""
+    registry = AccountRegistry(tmp_path, env={})
+    account = registry.create("Mum")
+
+    def boom(account_id):
+        raise RuntimeError("database is locked")
+
+    registry.accounts_repo.remove = boom
+
+    with pytest.raises(RuntimeError, match="database is locked"):
+        registry.remove(account.id, delete_data=True)
+
+    assert not account_dir(tmp_path, account.id).exists()
 
 
 def test_create_gives_a_new_account_the_same_shared_bucket_and_gate_as_boot(tmp_path):

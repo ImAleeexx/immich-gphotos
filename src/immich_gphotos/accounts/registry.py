@@ -383,15 +383,23 @@ class AccountRegistry:
         disk" is the strictly less surprising thing to leave behind, so the
         row goes first.
 
-        Both drops (and the closes above them) happen inside one
-        `try`/`finally` pair, itself nested one level deeper for the
-        `delete_data` branch: a `Runtime.close()` or outgoing-client-close
-        that raises must not leave the control-database row behind (a
-        zombie account reappearing at the next boot, pointing at a
-        directory nothing else here knows is half torn down), and an
-        `accounts_repo.remove` that raises (e.g. a locked control database)
-        must not silently cancel an `rmtree` the admin explicitly asked for
-        by never reaching it.
+        RULING R14 -- the two failure modes past this point are not treated
+        the same, on purpose. By the time `Runtime.close()`/the outgoing
+        client close run, the account is already popped from `self._accounts`
+        and its thread already stopped: the removal has, for all practical
+        purposes, already happened. A raise from either close is therefore
+        folded into the same `warning` string the failed-workflow-deletion
+        branch above already uses (appended to it, not overwriting it, if
+        both happened) rather than propagated -- an admin who asked to
+        remove an account and got a 500 for it would either retry a delete
+        that is now a 404, or conclude the account still exists, and neither
+        would be true. `accounts_repo.remove`, immediately after, is
+        different: if *that* raises, the control-database row genuinely
+        still exists, so the removal genuinely did not complete, and letting
+        it propagate is the honest outcome. Its own `delete_data` `rmtree`
+        still runs regardless, in a `finally` nested one level deeper, so a
+        raise there does not silently cancel a directory deletion the admin
+        explicitly asked for.
 
         Popping the account out of `self._accounts` up front (rather than
         only once the database row is dropped) is a separate, narrower
@@ -449,10 +457,17 @@ class AccountRegistry:
             if close is not None:
                 close()
             _close_outgoing_immich_client(immich, getattr(account.services.runtime, "_pool", None))
+        except Exception as exc:  # noqa: BLE001 - see Ruling R14 above
+            close_warning = (
+                f"Removed the account, but closing its Immich connection failed ({exc}). "
+                "This is harmless -- nothing will use it again -- but the connection may "
+                "linger until the process restarts."
+            )
+            warning = f"{warning} {close_warning}" if warning else close_warning
+
+        try:
+            self.accounts_repo.remove(account_id)
         finally:
-            try:
-                self.accounts_repo.remove(account_id)
-            finally:
-                if delete_data:
-                    shutil.rmtree(account_dir(self._data_dir, account_id), ignore_errors=True)
+            if delete_data:
+                shutil.rmtree(account_dir(self._data_dir, account_id), ignore_errors=True)
         return warning

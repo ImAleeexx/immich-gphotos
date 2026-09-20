@@ -89,6 +89,32 @@ def test_deleting_an_account_requires_the_label_typed_back(two_account_http):
     )
 
 
+def test_a_close_failure_during_removal_still_returns_200_with_a_warning(two_account_http):
+    """Ruling R14: by the time `registry.remove` gets to closing the
+    account's `Runtime`/outgoing Immich client, the removal has already
+    happened in every way that matters -- gone from the registry, gone from
+    the control database. A failure in that close must not turn a
+    completed removal into a 500 the admin has to puzzle over; it comes
+    back as an ordinary 200 with a `warning` field instead, the same shape
+    a failed workflow deletion already uses."""
+    client, _, second = two_account_http
+
+    class BrokenRuntime:
+        def close(self):
+            raise RuntimeError("pool wedged")
+
+    second.services.runtime = BrokenRuntime()
+
+    response = client.request(
+        "DELETE", f"/api/accounts/{second.id}", json={"confirm_label": "Mum", "delete_data": False}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["removed"] == second.id
+    assert "pool wedged" in body["warning"]
+
+
 def test_selecting_an_account_sets_the_cookie(two_account_http):
     client, _, second = two_account_http
     response = client.post("/accounts/select", data={"account_id": second.id})
