@@ -11,6 +11,11 @@ from immich_gphotos.models import Asset
 
 WEBHOOK_METHOD = "immich-plugin-core#webhook"
 
+# Page size for the album-membership search. Matches `search_assets`'s own
+# default: the reconciler already walks the whole library at this size, so an
+# album -- a subset of it -- costs no more per request.
+ALBUM_PAGE_SIZE = 1000
+
 
 def _to_asset(item: dict[str, Any]) -> Asset:
     exif = item.get("exifInfo") or {}
@@ -122,8 +127,35 @@ class HttpImmichClient:
         ]
 
     def album_asset_ids(self, album_id: str) -> list[str]:
-        data = self._request("GET", f"/albums/{album_id}").json()
-        return [a["id"] for a in data.get("assets", [])]
+        """Every non-trashed asset in an Immich album.
+
+        Read through `/search/metadata`, not `GET /albums/{id}`. Immich's
+        `mapAlbum` does not put an `assets` array on the album detail
+        response -- it carries `assetCount` and nothing else -- so the
+        previous `data["assets"]` read resolved to `[]` for every album on
+        every server. Both callers fail silently on that: `AlbumMirror`
+        mirrored nothing to Google, and a `filters.album_allowlist` excluded
+        every asset, because an album that returns no ids is indistinguishable
+        from a legitimately empty one. No error was raised in either case.
+
+        `albumIds` is deprecated as of Immich 3.2.0 in favour of the new
+        `filter` object, but it is still served and is the only spelling that
+        also works on the v2 servers this project still supports (see
+        `setup.wizard`, which only requires >= 3.0 for workflows).
+        """
+        ids: list[str] = []
+        page: int | None = 1
+        while page is not None:
+            body = {"albumIds": [album_id], "page": page, "size": ALBUM_PAGE_SIZE}
+            data = self._request("POST", "/search/metadata", json=body).json()["assets"]
+            ids.extend(item["id"] for item in data.get("items", []) if "id" in item)
+            raw_next = data.get("nextPage")
+            next_page = int(raw_next) if raw_next else None
+            # Only ever move forward: a server that echoes the page it was
+            # given back as `nextPage` would otherwise spin this loop forever
+            # inside a background tick, with nothing to show for it.
+            page = next_page if next_page is not None and next_page > page else None
+        return ids
 
     def create_workflow(self, *, name: str, url: str, header_name: str, header_value: str) -> str:
         body = {

@@ -109,3 +109,20 @@ def test_api_key_permissions_we_require_still_exist(spec):
 
     available = set(spec["components"]["schemas"]["Permission"]["enum"])
     assert available >= REQUIRED_PERMISSIONS
+
+
+@pytest.mark.contract
+def test_album_membership_is_read_from_search_not_the_album_detail_body(spec):
+    """`test_endpoints_we_depend_on_still_exist` proves `GET /albums/{id}` is
+    still routed; it says nothing about what that response carries. Immich's
+    album detail DTO has no `assets` array, so `album_asset_ids` resolves
+    membership through `/search/metadata`'s `albumIds` instead. Both facts are
+    pinned here: reading `assets` off the album body is what silently broke
+    album mirroring and the album allowlist, and neither caller can tell an
+    empty answer from a legitimately empty album.
+    """
+    album = spec["components"]["schemas"]["AlbumResponseDto"]["properties"]
+    assert "assets" not in album
+    assert "assetCount" in album
+
+    assert "albumIds" in spec["components"]["schemas"]["MetadataSearchDto"]["properties"]

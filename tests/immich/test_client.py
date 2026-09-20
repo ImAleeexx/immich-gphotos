@@ -193,3 +193,64 @@ def test_delete_workflow_deletes_by_id():
     route = respx.delete(f"{BASE}/api/workflows/wf-1").mock(return_value=httpx.Response(200, json={}))
     client().delete_workflow("wf-1")
     assert route.called
+
+
+def _search_page(items: list[dict], next_page: str | None) -> dict:
+    return {
+        "albums": {"items": [], "total": 0, "count": 0, "facets": [], "nextPage": None},
+        "assets": {
+            "items": items,
+            "total": len(items),
+            "count": len(items),
+            "facets": [],
+            "nextCursor": None,
+            "nextPage": next_page,
+        },
+    }
+
+
+@respx.mock
+def test_list_albums_maps_name_and_count():
+    respx.get(f"{BASE}/api/albums").mock(
+        return_value=httpx.Response(
+            200,
+            json=[{"id": "alb-1", "albumName": "Holiday", "assetCount": 2}],
+        )
+    )
+    albums = client().list_albums()
+    assert [(a.id, a.name, a.asset_count) for a in albums] == [("alb-1", "Holiday", 2)]
+
+
+@respx.mock
+def test_album_asset_ids_uses_metadata_search_not_the_album_detail_body():
+    """Regression: `GET /albums/{id}` has never carried an `assets` array on
+    Immich 3.x -- `mapAlbum` returns `assetCount` and nothing else -- so
+    reading `data["assets"]` there silently yielded [] for every album and
+    album mirroring never pushed anything to Google.
+    """
+    detail = respx.get(f"{BASE}/api/albums/alb-1").mock(
+        return_value=httpx.Response(200, json={"id": "alb-1", "albumName": "Holiday", "assetCount": 2})
+    )
+    search = respx.post(f"{BASE}/api/search/metadata").mock(
+        return_value=httpx.Response(200, json=_search_page([{"id": "a1"}, {"id": "a2"}], None))
+    )
+
+    assert client().album_asset_ids("alb-1") == ["a1", "a2"]
+
+    assert not detail.called
+    assert search.called
+    body = search.calls.last.request.read().decode()
+    assert "alb-1" in body
+    assert "albumIds" in body
+
+
+@respx.mock
+def test_album_asset_ids_follows_every_page():
+    pages = [
+        httpx.Response(200, json=_search_page([{"id": "a1"}], "2")),
+        httpx.Response(200, json=_search_page([{"id": "a2"}], None)),
+    ]
+    route = respx.post(f"{BASE}/api/search/metadata").mock(side_effect=pages)
+
+    assert client().album_asset_ids("alb-1") == ["a1", "a2"]
+    assert route.call_count == 2
