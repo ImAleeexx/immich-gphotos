@@ -151,6 +151,11 @@ def test_open_paths_are_matched_exactly_not_by_prefix():
     # test_the_allowance_is_scoped_to_static_only for the guard on its scope.
     assert is_open("/static/whatever") is True
     assert is_open("/staticky") is False
+    # Task 7: `/hooks/immich/{account_id}` is a second deliberate prefix
+    # exception, scoped exactly to it -- Ruling R10 requires this widen the
+    # open surface by exactly this much and no more.
+    assert is_open("/hooks/immich/abc123") is True
+    assert is_open("/hooks/immichigan") is False
 
 
 def test_first_run_login_sets_the_password_and_grants_access(rig):

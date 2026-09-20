@@ -27,6 +27,17 @@ OPEN_PATHS = frozenset({"/hooks/immich", "/healthz", "/metrics", "/login"})
 # mounted directory, so the prefix cannot be walked out of.
 STATIC_PREFIX = "/static/"
 
+# Task 7: `/hooks/immich/{account_id}` is the per-account webhook path -- it
+# authenticates with its own header secret, not a session, and the account it
+# resolves to isn't known until the route itself parses `account_id`, so it
+# has to be open the same way `/hooks/immich` (the legacy path, still in
+# OPEN_PATHS above) already is. Scoped to exactly this one prefix, the same
+# way STATIC_PREFIX is scoped to exactly `/static/` -- RULING R10: widening
+# `is_open` widens what's reachable without a session at all, so the rule has
+# to name precisely the surface it's allowed to open and nothing next to it
+# (`/hooks/immichigan` must stay closed).
+HOOKS_PREFIX = "/hooks/immich/"
+
 _ITERATIONS = 200_000
 
 
@@ -54,7 +65,7 @@ def requires_setup(registry: "AccountRegistry") -> bool:
 
 
 def is_open(path: str) -> bool:
-    return path in OPEN_PATHS or path.startswith(STATIC_PREFIX)
+    return path in OPEN_PATHS or path.startswith(STATIC_PREFIX) or path.startswith(HOOKS_PREFIX)
 
 
 @router.post("/login")

@@ -188,3 +188,105 @@ def test_the_webhook_uses_the_legacy_account_not_just_the_first_one(tmp_path):
     assert response.status_code == 200
     assert first.services.assets.get("a1") is None
     assert second.services.assets.get("a1") is not None
+
+
+# --- Task 7: per-account webhook path ---------------------------------------
+#
+# The tests above exercise the single, pre-Task-7 `/hooks/immich` route
+# against hand-built `Services` graphs. These use Task 8's `two_account_http`
+# and `webhook_payload` fixtures (tests/api/conftest.py) instead: two *real*
+# accounts built through `registry.create`, which is what actually gives each
+# one its own `webhook_secret` to discriminate against.
+
+
+def test_a_webhook_reaches_the_account_named_in_the_path(two_account_http, webhook_payload):
+    client, first, second = two_account_http
+    response = client.post(
+        f"/hooks/immich/{second.id}",
+        json=webhook_payload("asset-2"),
+        headers={"X-IGP-Secret": second.services.webhook_secret},
+    )
+    assert response.status_code == 200
+    assert second.services.assets.get("asset-2") is not None
+    assert first.services.assets.get("asset-2") is None
+
+
+def test_one_accounts_secret_is_rejected_at_anothers_path(two_account_http, webhook_payload):
+    client, first, second = two_account_http
+    response = client.post(
+        f"/hooks/immich/{second.id}",
+        json=webhook_payload("asset-3"),
+        headers={"X-IGP-Secret": first.services.webhook_secret},
+    )
+    assert response.status_code == 401
+    assert second.services.assets.get("asset-3") is None
+    assert first.services.assets.get("asset-3") is None
+
+
+def test_an_unknown_account_is_a_401_not_a_404(two_account_http, webhook_payload):
+    """404 would confirm which account ids exist to an unauthenticated caller."""
+    client, _, _ = two_account_http
+    response = client.post(
+        "/hooks/immich/deadbeefcafe",
+        json=webhook_payload("asset-4"),
+        headers={"X-IGP-Secret": "anything"},
+    )
+    assert response.status_code == 401
+
+
+def test_the_legacy_path_still_reaches_the_migrated_account(two_account_http, webhook_payload):
+    """An install upgraded from v1 already has a workflow in Immich pointing
+    at the bare path. Dropping it stops that person's backups silently."""
+    client, first, _ = two_account_http
+    response = client.post(
+        "/hooks/immich",
+        json=webhook_payload("asset-5"),
+        headers={"X-IGP-Secret": first.services.webhook_secret},
+    )
+    assert response.status_code == 200
+    assert first.services.assets.get("asset-5") is not None
+
+
+def test_a_dead_legacy_account_is_a_clean_401_not_a_500(two_account_http, webhook_payload):
+    """test_remove_leaves_a_dead_legacy_webhook_key_solvable_by_task_7
+    (tests/accounts/test_registry.py) deliberately leaves
+    `LEGACY_WEBHOOK_ACCOUNT_KEY` pointing at an id `registry.get` no longer
+    resolves once that account is removed. This is the HTTP side of that:
+    the legacy route must not turn `None.services` into an AttributeError,
+    and must not silently reroute into whichever account happens to remain
+    (that would queue someone else's asset into the wrong account) -- a
+    clean 401 is the only acceptable outcome.
+    """
+    client, first, second = two_account_http
+    registry = client.app.state.accounts
+    registry.remove(first.id, delete_data=False)
+
+    # Deliberately `second`'s own, *correct* secret: a naive `registry.get(dead_id)
+    # or registry.default()` fallback would resolve to `second` and then accept
+    # this, silently queuing the asset into an account the caller never named.
+    # Only a strict "the legacy key names a live account, or nothing" check
+    # catches that; a plain secret-mismatch would pass even with the bug.
+    response = client.post(
+        "/hooks/immich",
+        json=webhook_payload("asset-6"),
+        headers={"X-IGP-Secret": second.services.webhook_secret},
+    )
+
+    assert response.status_code == 401
+    assert second.services.assets.get("asset-6") is None
+
+
+def test_unparseable_payload_warns_the_right_accounts_event_log(two_account_http):
+    """The 400-on-unparseable-payload behaviour predates Task 7 (see
+    `test_non_json_body_returns_400_without_raising` above); what's new is
+    that it must land in *that account's* event log, not whichever account
+    the old single-account code happened to resolve."""
+    client, first, second = two_account_http
+    response = client.post(
+        f"/hooks/immich/{second.id}",
+        json={"nope": True},
+        headers={"X-IGP-Secret": second.services.webhook_secret},
+    )
+    assert response.status_code == 400
+    assert any(e["level"] == "warn" for e in second.services.events.recent())
+    assert first.services.events.recent() == []
