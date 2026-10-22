@@ -441,3 +441,30 @@ def test_a_database_written_before_the_bandwidth_marker_existed_gains_the_column
     r.claim_next(limit=1)
     r.defer_for_bandwidth("a1", clock.now() + timedelta(hours=9))
     assert r.release_bandwidth_deferrals() == 1
+
+
+def test_legacy_trashed_state_migrates_to_ineligible_on_open(tmp_path):
+    import sqlite3
+
+    from immich_gphotos.store.schema import SCHEMA
+
+    path = tmp_path / "legacy_trashed.db"
+    legacy = sqlite3.connect(path)
+    legacy.executescript(SCHEMA)
+    legacy.execute(
+        "INSERT INTO asset (immich_id, checksum, filename, type, immich_updated_at, visibility,"
+        " state, priority, first_seen_at) VALUES ('legacy-trash-1', ?, 'pic.jpg', 'IMAGE',"
+        " '2026-09-17T10:00:00Z', 'timeline', 'trashed', 0, '2026-09-17T10:00:00Z')",
+        (CHECKSUM,),
+    )
+    legacy.commit()
+    legacy.close()
+
+    clock = FakeClock()
+    conn = connect(path)
+    r = AssetRepo(conn, clock)
+
+    stored = r.get("legacy-trash-1")
+    assert stored is not None
+    assert stored.state is AssetState.INELIGIBLE
+    assert stored.ineligible_reason == "deleted_from_immich"

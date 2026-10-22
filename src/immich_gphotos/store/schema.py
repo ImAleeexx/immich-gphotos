@@ -103,3 +103,17 @@ def apply_migrations(
         columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
             conn.execute(ddl)
+
+    # Legacy cleanup: historical builds recorded assets trashed in Immich with
+    # state = 'trashed'. The AssetState enum has since retired that variant in
+    # favour of INELIGIBLE + ineligible_reason = 'deleted_from_immich'. Migrate
+    # any existing rows forward so AssetState(row["state"]) does not raise
+    # during reconcile passes. Only an account database has an asset table:
+    # the control database goes through the same connect() and must not
+    # fail to open because of this.
+    has_asset = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'asset'").fetchone()
+    if has_asset:
+        conn.execute(
+            "UPDATE asset SET state = 'ineligible', ineligible_reason = 'deleted_from_immich'"
+            " WHERE state = 'trashed'"
+        )
