@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -30,6 +32,16 @@ ASSET = Asset(
 )
 
 
+def sha1_b64(data: bytes) -> str:
+    return base64.b64encode(hashlib.sha1(data).digest()).decode("ascii")
+
+
+# The hash the worker actually describes to Google: the SHA-1 of the fake
+# original's bytes, not Immich's ("sum-a"), which for external-library rows
+# is a virtual sha1(path) that never describes real bytes.
+CONTENT_HASH = sha1_b64(b"ABC")
+
+
 @pytest.fixture
 def rig(tmp_path):
     clock = FakeClock()
@@ -51,11 +63,48 @@ def test_new_asset_is_uploaded_and_marked_synced(rig):
     result = worker.process(claim(assets))
     assert result.state is AssetState.SYNCED
     assert result.outcome is Outcome.UPLOADED
-    assert gphotos.uploads == [("sum-a", "IMG_1.JPG")]
+    # The hash sent to Google describes the bytes actually uploaded -- the
+    # content SHA-1, not Immich's checksum ("sum-a" is exactly what an
+    # External Library row looks like: a sha1(path) virtual checksum).
+    assert gphotos.uploads == [(CONTENT_HASH, "IMG_1.JPG")]
     assert assets.get("a1").media_key == result.media_key
+    assert assets.get("a1").upload_sha1 == CONTENT_HASH
 
 
-def test_asset_already_in_google_is_never_downloaded(rig):
+def test_external_library_checksums_are_never_sent_as_content_hashes(rig):
+    """The upstream defect: Immich's External Library checksums are
+    sha1('path:...') (checksumAlgorithm='sha1-path', never the file's
+    bytes). Sending one as the upload hash makes Google check it against
+    the uploaded bytes, which never match. The worker hashes the resolved
+    bytes itself, so a path-hash checksum only ever keys the DB identity
+    and the checksum-ked pre-resolve dedup lookup -- never the upload."""
+    worker, assets, immich, gphotos, _, _ = rig
+    path_checksum = sha1_b64(b"path:/volume1/photo/IMG_1.JPG")
+    result = worker.process(claim(assets, replace(ASSET, checksum=path_checksum)))
+    assert result.outcome is Outcome.UPLOADED
+    assert gphotos.uploads == [(CONTENT_HASH, "IMG_1.JPG")]
+    assert path_checksum not in dict(gphotos.uploads)
+    assert assets.get("a1").upload_sha1 == CONTENT_HASH
+
+
+def test_content_already_in_google_is_caught_by_the_content_hash(rig):
+    """Dedup by resolved bytes' hash: catches content that Google already
+    has under a *different* Immich checksum (external-library twins,
+    re-imports), without uploading the bytes again. The row records the
+    content hash it was found under so a later trash still keys right."""
+    worker, assets, immich, gphotos, _, _ = rig
+    gphotos.present[CONTENT_HASH] = "existing-key"
+    result = worker.process(claim(assets))
+    assert result.outcome is Outcome.ALREADY_PRESENT
+    assert result.media_key == "existing-key"
+    assert gphotos.uploads == []
+    assert assets.get("a1").upload_sha1 == CONTENT_HASH
+
+
+def test_checksum_keyed_dedup_clears_it_without_resolving_bytes(rig):
+    """The pre-resolve lookup keyed on Immich's checksum: for Internal-
+    upload rows (checksum == content hash) it clears the asset without
+    ever fetching bytes -- the whole point of asking before resolving."""
     worker, assets, immich, gphotos, _, _ = rig
     gphotos.present["sum-a"] = "existing-key"
     result = worker.process(claim(assets))
@@ -87,7 +136,7 @@ def test_hidden_assets_are_ineligible_and_touch_nothing(rig):
 
 def test_transient_failure_schedules_a_retry(rig):
     worker, assets, _, gphotos, clock, _ = rig
-    gphotos.fail_on["sum-a"] = GPhotosError("network", ErrorClass.TRANSIENT)
+    gphotos.fail_on[CONTENT_HASH] = GPhotosError("network", ErrorClass.TRANSIENT)
     result = worker.process(claim(assets))
     stored = assets.get("a1")
     assert result.state is AssetState.PENDING
@@ -97,7 +146,7 @@ def test_transient_failure_schedules_a_retry(rig):
 
 def test_quarantine_after_max_attempts(rig):
     worker, assets, _, gphotos, clock, _ = rig
-    gphotos.fail_on["sum-a"] = GPhotosError("network", ErrorClass.TRANSIENT)
+    gphotos.fail_on[CONTENT_HASH] = GPhotosError("network", ErrorClass.TRANSIENT)
     policy = RetryPolicy(jitter=0.0, max_attempts=2)
     worker = Worker(worker._assets, gphotos, worker._resolver, Filters(), policy, clock)
     stored = claim(assets)
@@ -109,7 +158,7 @@ def test_quarantine_after_max_attempts(rig):
 
 def test_auth_failure_halts_without_burning_an_attempt(rig):
     worker, assets, _, gphotos, _, _ = rig
-    gphotos.fail_on["sum-a"] = GPhotosError("401", ErrorClass.AUTH_INVALID)
+    gphotos.fail_on[CONTENT_HASH] = GPhotosError("401", ErrorClass.AUTH_INVALID)
     result = worker.process(claim(assets))
     assert result.halt is True
     assert result.error_class is ErrorClass.AUTH_INVALID
@@ -120,7 +169,7 @@ def test_auth_failure_halts_without_burning_an_attempt(rig):
 
 def test_downloaded_scratch_file_is_removed_even_when_upload_fails(rig):
     worker, assets, _, gphotos, _, tmp_path = rig
-    gphotos.fail_on["sum-a"] = GPhotosError("network", ErrorClass.TRANSIENT)
+    gphotos.fail_on[CONTENT_HASH] = GPhotosError("network", ErrorClass.TRANSIENT)
     worker.process(claim(assets))
     scratch = tmp_path / "scratch"
     assert list(scratch.glob("*")) == []
@@ -180,7 +229,8 @@ def test_bandwidth_cap_shared_across_calls_drains_the_same_bucket(tmp_path):
     clock = FakeClock()
     assets = AssetRepo(connect(tmp_path / "t.db"), clock)
     content = b"x" * 60
-    immich = FakeImmichClient(contents={"a1": content, "a2": content})
+    second_content = b"y" * 60
+    immich = FakeImmichClient(contents={"a1": content, "a2": second_content})
     gphotos = FakeGooglePhotosClient()
     resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
     bucket = TokenBucket(rate_bytes_per_second=100, clock=clock)
@@ -199,7 +249,9 @@ def test_bandwidth_cap_shared_across_calls_drains_the_same_bucket(tmp_path):
     worker.process(claim(assets, replace(ASSET, size_bytes=len(content))))
     assert sleeps == []  # 60 of 100 tokens spent, still within capacity
 
-    second = replace(ASSET, immich_id="a2", checksum="sum-a2", size_bytes=len(content))
+    second = replace(
+        ASSET, immich_id="a2", checksum="sum-a2", filename="a2.jpg", size_bytes=len(second_content)
+    )
     worker.process(claim(assets, second))
     # The second call drains the *same* bucket: 60 + 60 = 120 against a
     # 100-token capacity that has not had time to refill (FakeClock never
@@ -290,7 +342,7 @@ def test_a_deferred_upload_is_not_metered_twice_on_retry(tmp_path):
 
     assert result.state is AssetState.SYNCED
     assert sleeps == []  # the wait already elapsed via the requeue, not a sleep
-    assert gphotos.uploads == [("sum-a", "IMG_1.JPG")]
+    assert gphotos.uploads == [(sha1_b64(b"x" * 5_000_000), "IMG_1.JPG")]
 
 
 def test_wait_just_under_the_bound_still_sleeps_inline(tmp_path):

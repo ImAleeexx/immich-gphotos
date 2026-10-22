@@ -33,6 +33,8 @@ class BackgroundLoops:
         clock: Clock,
         events: EventRepo,
         assets=None,  # noqa: ANN001 - AssetRepo; only needed for the periodic stale-upload sweep
+        favorite_syncer=None,  # noqa: ANN001 - sync.favorites.FavoriteSyncer; None keeps old call sites working
+        live_photo_completer=None,  # noqa: ANN001 - sync.livephoto_backup.LivePhotoCompleter
     ) -> None:
         self._runtime = runtime
         self._reconciler = reconciler
@@ -43,6 +45,8 @@ class BackgroundLoops:
         self._clock = clock
         self._events = events
         self._assets = assets
+        self._favorite_syncer = favorite_syncer
+        self._live_photo_completer = live_photo_completer
         self._next_reconcile: datetime | None = None
         self._paused_at: datetime | None = None
 
@@ -92,6 +96,16 @@ class BackgroundLoops:
             if self._settings.deletions_enabled:
                 self._sweep_deletions()
 
+            if self._settings.favorites_enabled and self._favorite_syncer is not None:
+                self._safely("favorite sync", self._favorite_syncer.sync_once)
+
+            # Only does anything outside still_only_legacy, and only for
+            # Live Photos queued under the current mode (see
+            # sync.livephoto_backup) -- never for history the user did not
+            # ask to reprocess.
+            if self._live_photo_completer is not None:
+                self._safely("live photo motion", self._live_photo_completer.sweep)
+
         if self._backfill.is_running():
             self._safely("backfill", self._backfill.run_slice)
 
@@ -110,7 +124,13 @@ class BackgroundLoops:
                 "Review the trashed assets in Immich, then re-enable if intended.",
             )
             return
-        if plan.checksums:
+        if getattr(plan, "unverified_ids", None):
+            self._events.add(
+                "warn",
+                f"deletion skipped for {len(plan.unverified_ids)} asset(s) with no verifiable "
+                "Google mapping (synced before upload hashes were recorded); check them by hand.",
+            )
+        if plan.checksums or getattr(plan, "retained_ids", None):
             self._safely("deletion", self._deletion_sweeper.execute, plan)
 
     def _safely(self, label: str, fn, *args) -> None:  # noqa: ANN001

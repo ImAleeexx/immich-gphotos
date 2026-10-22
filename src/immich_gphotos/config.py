@@ -3,6 +3,8 @@ from datetime import time, timedelta
 from typing import Literal
 
 Quality = Literal["original", "saver", "quota"]
+# How Apple Live Photos are backed up -- see `sync.livephoto.LIVE_PHOTO_MODES`.
+LivePhotoMode = Literal["still_only_legacy", "original_pair", "derived_motion"]
 
 # Bounds on `Settings.worker_threads` and `Settings.bandwidth_bytes_per_second`,
 # shared between the API's `SettingsPatch` validation (`api.routes`) and
@@ -75,6 +77,11 @@ class Settings:
     reconcile_overlap: timedelta = timedelta(minutes=5)
     albums_enabled: bool = True
     deletions_enabled: bool = False
+    favorites_enabled: bool = True
+    # The upstream behaviour (still only, motion recorded as not backed up)
+    # is the default, so an upgrade never changes what an account uploads;
+    # `original_pair` / `derived_motion` are explicit choices in Settings.
+    live_photo_mode: LivePhotoMode = "still_only_legacy"
     window: Window | None = None
     bandwidth_bytes_per_second: int | None = None
     filters: Filters = field(default_factory=Filters)

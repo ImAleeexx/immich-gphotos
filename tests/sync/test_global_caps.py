@@ -128,7 +128,7 @@ def test_the_upload_gate_bounds_concurrent_uploads(tmp_path):
 
     def make_gphotos(entered: threading.Event, release: threading.Event | None):
         class SlowGphotos(FakeGooglePhotosClient):
-            def upload(self, path, *, checksum, filename):
+            def upload(self, path, *, checksum, filename, source=None):
                 entered.set()
                 if release is not None:
                     assert release.wait(timeout=5), "test never released the first upload"

@@ -24,11 +24,13 @@ def asset_from_webhook(payload: dict) -> Asset:
             size_bytes=exif.get("fileSizeInByte"),
             immich_updated_at=raw.get("updatedAt", ""),
             taken_at=raw.get("fileCreatedAt"),
+            live_photo_video_id=raw.get("livePhotoVideoId"),
             original_path=raw.get("originalPath"),
             visibility=raw.get("visibility", "timeline"),
             is_offline=bool(raw.get("isOffline", False)),
             is_trashed=bool(raw.get("deletedAt")),
             tags=tuple(t["name"] for t in raw.get("tags") or [] if "name" in t),
+            is_favorite=bool(raw.get("isFavorite", False)),
         )
     except (KeyError, TypeError, ChecksumError) as exc:
         raise ValueError(f"unusable webhook payload: {exc}") from exc

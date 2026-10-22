@@ -94,6 +94,8 @@ def test_search_assets_maps_items_and_next_page():
     # `fileCreatedAt`, not `updatedAt`: this is what ends up as the uploaded
     # file's mtime and therefore as the Google Photos capture date.
     assert asset.taken_at == "2022-07-05T12:00:00.000Z"
+    assert asset.is_favorite is False
+    assert asset.live_photo_video_id is None
 
 
 @respx.mock

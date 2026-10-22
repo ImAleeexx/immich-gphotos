@@ -38,6 +38,9 @@ from immich_gphotos.sync.albums import AlbumMirror
 from immich_gphotos.sync.backfill import BackfillJob
 from immich_gphotos.sync.bytes import ByteResolver
 from immich_gphotos.sync.deletions import DeletionSweeper
+from immich_gphotos.sync.exif_xmp import ExifToolMotionPhotoXmp
+from immich_gphotos.sync.favorites import FavoriteSyncer
+from immich_gphotos.sync.livephoto_backup import LivePhotoCompleter
 from immich_gphotos.sync.loops import BackgroundLoops
 from immich_gphotos.sync.reconciler import Reconciler
 from immich_gphotos.sync.runtime import Runtime
@@ -106,8 +109,11 @@ def build_runtime_graph(
     clock: Clock,
     scratch: Path,
     allow_direct: bool,
+    direct_roots: tuple[Path, ...] | None = None,
     bandwidth: TokenBucket | None = None,
     gate: AbstractContextManager[Any] | None = None,
+    favorite_ledger: Any = None,
+    account_id: str | None = None,
 ) -> tuple[Runtime, BackfillJob, BackgroundLoops]:
     """Construct one fresh copy of everything that closes over clients/settings.
 
@@ -126,7 +132,26 @@ def build_runtime_graph(
     "no cap" / "no gate", exactly as before, and costs nothing extra --
     `Worker` never touches an unset bandwidth or gate.
     """
-    resolver = ByteResolver(immich, scratch=scratch, allow_direct=allow_direct)
+    resolver = ByteResolver(
+        immich,
+        scratch=scratch,
+        allow_direct=allow_direct,
+        direct_roots=direct_roots,
+        assets=assets,
+        xmp=ExifToolMotionPhotoXmp.if_available(),
+    )
+    # `favorite_ledger` (the control database's sync.favorite_ledger) lets
+    # service accounts that back up into the same Google account agree on
+    # stars; the Google identity comes from the client itself, so a wizard
+    # re-auth to a different Google account re-scopes it automatically.
+    favorite_syncer = FavoriteSyncer(
+        gphotos,
+        assets,
+        ledger=favorite_ledger,
+        google_account=getattr(gphotos, "google_account", None),
+        account_id=account_id,
+    )
+    live_photos = LivePhotoCompleter(assets, gphotos, resolver, clock, settings.live_photo_mode)
     worker = Worker(
         assets,
         gphotos,
@@ -136,6 +161,10 @@ def build_runtime_graph(
         clock,
         bandwidth=bandwidth,
         gate=gate,
+        favorites_enabled=settings.favorites_enabled,
+        favorites=favorite_syncer,
+        live_photo_mode=settings.live_photo_mode,
+        live_photos=live_photos,
     )
     runtime = Runtime(assets, worker, settings, clock, events, immich=immich)
     backfill = BackfillJob(immich, assets, cursors, settings)
@@ -149,6 +178,8 @@ def build_runtime_graph(
         clock=clock,
         events=events,
         assets=assets,
+        favorite_syncer=favorite_syncer,
+        live_photo_completer=live_photos,
     )
     return runtime, backfill, loops
 
@@ -205,8 +236,11 @@ def rebuild_runtime(
         clock=services.clock,
         scratch=services.scratch or Path("scratch"),
         allow_direct=services.allow_direct,
+        direct_roots=services.direct_roots,
         bandwidth=services.bandwidth,
         gate=services.gate,
+        favorite_ledger=services.favorite_ledger,
+        account_id=services.account_id,
     )
 
     # A fresh Runtime/BackgroundLoops otherwise starts unpaused, so any

@@ -16,6 +16,21 @@ from immich_gphotos.sync.runtime import Runtime
 from immich_gphotos.sync.throttle import TokenBucket
 from immich_gphotos.sync.worker import Worker
 
+# FakeImmichClient serves b"fake-bytes" for any id with no content; once the
+# worker itself hashes the resolved bytes, failures must be keyed on that
+# content hash -- not on Immich's ("sum-a"), which it no longer sends.
+FAKE_BYTES_HASH = None
+
+
+def sha1_b64(data: bytes) -> str:
+    import base64
+    import hashlib
+
+    return base64.b64encode(hashlib.sha1(data).digest()).decode()
+
+
+FAKE_BYTES_HASH = sha1_b64(b"fake-bytes")
+
 
 def asset(i: str) -> Asset:
     return Asset(
@@ -85,7 +100,7 @@ def test_an_auth_failure_pauses_the_runtime(rig):
     original strictly-sequential guarantee: nothing claimed behind a halted
     asset is even started."""
     assets, events, gphotos, worker, clock, immich = rig
-    gphotos.fail_on["sum-a"] = GPhotosError("401", ErrorClass.AUTH_INVALID)
+    gphotos.fail_on[FAKE_BYTES_HASH] = GPhotosError("401", ErrorClass.AUTH_INVALID)
     assets.upsert_pending(asset("a"), Priority.WEBHOOK)
     assets.upsert_pending(asset("b"), Priority.WEBHOOK)
 
@@ -126,7 +141,11 @@ def test_pool_halts_the_batch_without_starting_undispatched_waves(rig):
     already run concurrently with it; that is not "unprocessed" and must not
     be requeued."""
     assets, events, gphotos, worker, clock, immich = rig
-    gphotos.fail_on["sum-a"] = GPhotosError("401", ErrorClass.AUTH_INVALID)
+    # Distinct bytes per asset: once the worker hashes the real bytes, two
+    # rows with identical content share one content hash -- the failure
+    # injector would catch "b" too, and "b" must complete normally.
+    immich.contents.update({name: f"bytes-{name}".encode() for name in ("a", "b", "c", "d")})
+    gphotos.fail_on[sha1_b64(b"bytes-a")] = GPhotosError("401", ErrorClass.AUTH_INVALID)
     for name in ("a", "b", "c", "d"):
         assets.upsert_pending(asset(name), Priority.WEBHOOK)
         # FakeClock never advances on its own, so without this every row
@@ -141,7 +160,6 @@ def test_pool_halts_the_batch_without_starting_undispatched_waves(rig):
     assert result.halted is True
     assert result.processed == 2  # only the first wave, [a, b], ever ran
     assert runtime.paused_reason is not None
-
     halted = assets.get("a")
     assert halted.state == AssetState.PENDING
     assert halted.attempts == 0  # not the asset's fault
@@ -369,9 +387,13 @@ def test_a_deferred_backlog_drains_at_the_configured_bandwidth_cap(tmp_path):
     events = EventRepo(conn, clock)
     gphotos = FakeGooglePhotosClient()
     rate = 100
-    content = b"x" * 10_000
     ids = [f"a{i:02d}" for i in range(20)]
-    immich = FakeImmichClient(contents=dict.fromkeys(ids, content))
+    # Distinct 10,000-byte payloads per asset: with the worker hashing real
+    # bytes, identical content would share one content hash and each asset
+    # after the first would dedup instead of uploading.
+    content_by_id = {i: ((i.encode() + b"x") * 5000)[:10_000] for i in ids}
+    content = next(iter(content_by_id.values()))
+    immich = FakeImmichClient(contents=content_by_id)
     resolver = ByteResolver(immich, scratch=tmp_path / "scratch")
     sleeps: list[float] = []
     worker = Worker(

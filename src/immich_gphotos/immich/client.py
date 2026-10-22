@@ -27,11 +27,13 @@ def _to_asset(item: dict[str, Any]) -> Asset:
         size_bytes=exif.get("fileSizeInByte"),
         immich_updated_at=item.get("updatedAt", ""),
         taken_at=item.get("fileCreatedAt"),
+        live_photo_video_id=item.get("livePhotoVideoId"),
         original_path=item.get("originalPath"),
         visibility=item.get("visibility", "timeline"),
         is_offline=bool(item.get("isOffline", False)),
         is_trashed=bool(item.get("isTrashed", False)),
         tags=tuple(t["name"] for t in item.get("tags") or [] if "name" in t),
+        is_favorite=bool(item.get("isFavorite", False)),
     )
 
 
@@ -98,8 +100,9 @@ class HttpImmichClient:
         # Stream to a sibling temp file and atomically replace dest only once the
         # whole body has landed. A partial file at dest would be indistinguishable
         # from a complete one to anything that later just checks existence, and
-        # since uploads are keyed on Immich's pre-computed checksum rather than a
-        # hash of the bytes we send, a truncated download becomes a corrupt upload
+        # since every Google-side consumer keys on hashes of real bytes (the
+        # resolver certifies each resolved file's SHA-1), a truncated download
+        # becomes either a correctly-failing hash read or a corrupt upload
         # recorded as "already present" forever.
         tmp = dest.with_suffix(dest.suffix + ".part")
         try:

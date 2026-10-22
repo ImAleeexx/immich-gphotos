@@ -48,14 +48,36 @@ class AlbumMirror:
         return AlbumSyncResult(albums=touched, added=added)
 
     def _pending_media_keys(self, album: ImmichAlbum) -> list[tuple[str, str]]:
+        """(member id, media key) pairs not yet added to this album.
+
+        A Live Photo can own more than one Google item: its still, plus the
+        original `.MOV` (original_pair) or a Motion Photo built later by a
+        reprocess (derived_motion). Those extra items belong in every album
+        their still is in, so each is tracked as its own member --
+        `<asset id>#motion` / `<asset id>#derived` -- and added on the next
+        pass after it exists, even when the still itself was added long ago.
+        """
         pending: list[tuple[str, str]] = []
         for asset_id in self._immich.album_asset_ids(album.id):
-            if self._albums.is_member_added(album.id, asset_id):
-                continue
             stored = self._assets.get(asset_id)
-            if stored and stored.media_key:
-                pending.append((asset_id, stored.media_key))
+            if not stored or not stored.media_key:
+                continue
+            members = [(asset_id, stored.media_key), *self._live_photo_extras(asset_id, stored.media_key)]
+            for member_id, media_key in members:
+                if not self._albums.is_member_added(album.id, member_id):
+                    pending.append((member_id, media_key))
         return pending
+
+    def _live_photo_extras(self, asset_id: str, still_key: str) -> list[tuple[str, str]]:
+        live = self._assets.live_photo(asset_id)
+        if live is None:
+            return []
+        extras = []
+        for suffix, column in (("motion", "video_media_key"), ("derived", "derived_media_key")):
+            key = live[column]
+            if key and key != still_key:
+                extras.append((f"{asset_id}#{suffix}", key))
+        return extras
 
     def _push(self, album: ImmichAlbum, batch: list[tuple[str, str]]) -> None:
         media_keys = [key for _, key in batch]

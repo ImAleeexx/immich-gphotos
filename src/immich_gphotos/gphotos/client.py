@@ -1,3 +1,5 @@
+import base64
+import os
 import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -23,7 +25,8 @@ import requests.exceptions
 from gpmc.exceptions import UploadRejectedError
 
 from immich_gphotos.config import Quality
-from immich_gphotos.gphotos.protocol import GPhotosError
+from immich_gphotos.gphotos import stable_upload
+from immich_gphotos.gphotos.protocol import GPhotosError, SourceChangedDuringUpload, UploadSource
 from immich_gphotos.models import ErrorClass
 
 ALBUM_BATCH = 500
@@ -142,6 +145,13 @@ class GpmcClient:
         self._local = threading.local()
 
     @property
+    def google_account(self) -> str | None:
+        """The Google account this client authenticates as (see sync.favorite_ledger)."""
+        from immich_gphotos.sync.favorite_ledger import google_identity
+
+        return google_identity(self._auth_data)
+
+    @property
     def quality(self) -> Quality:
         return self._quality
 
@@ -218,26 +228,69 @@ class GpmcClient:
 
         try:
             return fn(client)
+        except GPhotosError:
+            raise  # already classified (e.g. SourceChangedDuringUpload)
         except Exception as exc:  # noqa: BLE001 - deliberately broad, then classified
             raise GPhotosError(f"{action} failed: {exc}", classify_gpmc_error(exc)) from exc
 
     def exists(self, checksum: str) -> str | None:
         return self._guard("hash lookup", lambda client: client.get_media_key_by_hash(checksum))
 
-    def upload(self, path: Path, *, checksum: str, filename: str) -> str:
-        result = self._guard(
-            "upload",
-            lambda client: client.upload(
-                target={path: {"hash": checksum, "filename": filename}},
-                use_quota=self._quality == "quota",
-                saver=self._quality == "saver",
-                show_progress=False,
-                threads=1,
-            ),
-        )
+    def upload(self, path: Path, *, checksum: str, filename: str, source: UploadSource | None = None) -> str:
+        """Upload the file and create its media item -- only if the bytes held.
+
+        This drives gpmc's three steps (upload token, byte upload, commit)
+        itself instead of calling `gpmc.Client.upload`, which opens the path
+        twice and commits unconditionally. Here the bytes stream from one
+        pinned descriptor (`source.open()`), the SHA-1 of what was actually
+        sent is computed on the way out, and `commit_upload` -- the only step
+        that creates a Google media item -- runs only when that hash equals
+        `checksum` and the source is provably unchanged
+        (`stable_upload.check_before_commit`). A rewrite racing the upload
+        therefore raises `SourceChangedDuringUpload` with *no* item created;
+        the uncommitted blob expires on Google's side.
+
+        Everything else matches gpmc's own `_upload_file`: a remote hash hit
+        returns the existing key without uploading, the capture timestamp
+        is the file's mtime (now taken from the pinned descriptor), and the
+        quality/model mapping is gpmc's.
+        """
+
+        def run(client: Any) -> str:  # noqa: ANN401 - gpmc has no public type export
+            api = client.api
+            hash_bytes = base64.b64decode(checksum)
+            fd = stable_upload.open_source(path, source)
+            try:
+                before = os.fstat(fd)
+                if stable_upload.sha1_b64_of_fd(fd, before.st_size) != checksum:
+                    raise SourceChangedDuringUpload(f"{filename} no longer hashes to the declared SHA-1")
+                existing = api.find_remote_media_by_hash(hash_bytes)
+                if existing:
+                    return existing
+                token = api.get_upload_token(checksum, before.st_size)
+                reader = stable_upload.FdReader(fd, before.st_size)
+                response = api.upload_file(file=reader, upload_token=token)
+                stable_upload.check_before_commit(fd, before, reader, checksum, source)
+                model, quality = "Pixel XL", "original"
+                if self._quality == "saver":
+                    model, quality = "Pixel 2", "saver"
+                if self._quality == "quota":
+                    model = "Pixel 8"
+                return api.commit_upload(
+                    upload_response_decoded=response,
+                    file_name=filename,
+                    sha1_hash=hash_bytes,
+                    upload_timestamp=int(before.st_mtime),
+                    model=model,
+                    quality=quality,
+                )
+            finally:
+                os.close(fd)
+
+        result = self._guard("upload", run)
         if not result:
             raise GPhotosError("upload returned no media key", ErrorClass.UNKNOWN)
-        return next(iter(result.values()))
+        return result
 
     def create_album(self, name: str, media_keys: Sequence[str]) -> str:
         keys = list(media_keys)
@@ -255,3 +308,15 @@ class GpmcClient:
     def trash(self, checksums: Sequence[str]) -> None:
         keys = list(checksums)
         self._guard("trash", lambda client: client.move_to_trash(keys))
+
+    def set_favorite(self, media_key: str, is_favorite: bool) -> None:
+        """Star or unstar one item in Google Photos.
+
+        gpmc names the parameter `dedup_key`, but the endpoint accepts the
+        remote `media_key` (the `AF1Qip...` value recorded in the asset table
+        on upload/dedup) -- verified live against Google Photos.
+        """
+        self._guard(
+            "favorite",
+            lambda client: client.api.set_favorite(media_key, is_favorite),
+        )

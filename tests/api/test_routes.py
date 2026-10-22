@@ -188,6 +188,36 @@ def test_retrying_a_non_quarantined_asset_is_404_and_leaves_it_unchanged(rig):
     assert stored.attempts == 0
 
 
+def test_bulk_retry_requeues_every_quarantined_asset(rig):
+    """The bulk form of manual retry: a backlog that failed for a class-wide
+    reason (the external-library checksum mismatch) must be able to return
+    to the queue in one call, not one call per asset."""
+    http, assets, _ = rig
+    for i in ("a", "b"):
+        assets.upsert_pending(asset(i), Priority.WEBHOOK)
+        assets.claim_next(limit=1)
+        assets.mark_failed(i, ErrorClass.UNKNOWN, "checksum does not match")
+    assets.upsert_pending(asset("c"), Priority.WEBHOOK)
+    assets.claim_next(limit=1)
+    assets.mark_synced("c", "k", Outcome.UPLOADED)
+
+    response = http.post("/api/failures/retry-all")
+    assert response.status_code == 200
+    assert response.json() == {"requeued": 2}
+    for i in ("a", "b"):
+        stored = assets.get(i)
+        assert stored.state is AssetState.PENDING
+        assert stored.attempts == 0
+    assert assets.get("c").state is AssetState.SYNCED  # untouched
+
+
+def test_bulk_retry_with_no_quarantined_assets_requeues_nothing(rig):
+    http, _, _ = rig
+    response = http.post("/api/failures/retry-all")
+    assert response.status_code == 200
+    assert response.json() == {"requeued": 0}
+
+
 def test_settings_roundtrip(rig):
     http, _, _ = rig
     response = http.put("/api/settings", json={"quality": "saver", "albums_enabled": False})

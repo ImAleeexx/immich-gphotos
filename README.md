@@ -20,10 +20,18 @@ It exists for one situation in particular: you've moved to Immich, you're happy 
 ## Why you might want it
 
 - 📸 **Every new photo, automatically.** Immich's own workflow system pushes new assets across the moment they land. No polling loop, no cron job, no export scripts.
-- ⚡ **It won't re-upload your library.** Immich stores a SHA-1 checksum of every original, and that is exactly what Google Photos deduplicates on. Before moving a single byte it asks Google "do you already have this?" For most people — whose phone was uploading to Google long before they found Immich — the answer is usually yes, and the backfill costs almost no bandwidth.
+- ⚡ **It won't re-upload your library.** Before moving a single byte it computes the SHA-1 of the asset's own bytes and asks Google "do you already have this?" — which means it works with Immich External Library assets too, whose database checksum is a `sha1(path)` placeholder rather than a content hash. For most people — whose phone was uploading to Google long before they found Immich — the answer is usually yes, and the backfill costs almost no bandwidth.
 - 🛟 **It notices what the webhook missed.** Immich's webhooks are fire-and-forget and never retried. A reconciler re-reads everything Immich changed since its last *complete* pass, so an asset created while the container was down still gets backed up. Nothing is ever known only by a webhook.
 - 🖼️ **Motion photos stay motion photos.** Immich splits the video out of a motion photo into a separate hidden asset and leaves the original JPEG untouched. This uploads that original with its motion payload intact, and skips the extracted clip — so you don't end up with stray one-second videos in your timeline.
-- 🗂️ **Albums come along.** Immich albums are recreated in Google Photos and kept in step, including splitting anything past Google's 20,000-item album limit.
+- 🍎 **Apple Live Photos: you pick, per account (Settings → Apple Live Photos).**
+  - `still_only_legacy` *(default, also for upgrades)* — the still is uploaded unchanged and the `.MOV` is **not** backed up. The status page counts these as `motion_not_backed_up`, so a still-only upload is never reported as a complete Live Photo backup.
+  - `original_pair` — the untouched still and the untouched `.MOV` are uploaded as two separate Google items. Nothing is converted, but Google shows them side by side rather than as one Live Photo, and the clip costs storage.
+  - `derived_motion` — a Google Motion Photo is built from the two originals in a scratch copy (JPEG, HEIC and AVIF stills; Immich's files are never modified) and that derived file is uploaded instead. The derived file has its own SHA-1, tracked separately from the original's, so finding the *original* still already in Google never skips the conversion or marks the pair complete. HEIC/AVIF muxing writes its XMP through ExifTool, which ships in the image — source installs outside Docker need `libimage-exiftool-perl` for that path only. Anything unmuxable falls back to the still alone and is reported as such.
+  - Changing the mode only affects photos synced afterwards. Already-synced Live Photos are listed (read-only) at `GET /api/live-photos` and are only touched if you press *Back up missing motion* (or `POST /api/live-photos/reprocess`), which adds the missing motion item and never deletes or replaces what is already in Google.
+  - Deleting a Live Photo in Immich (with deletion sync on) also trashes its extra Google items, the `.MOV` or the derived Motion Photo, even when Immich never reports the hidden `.MOV` itself as trashed, unless another Immich asset still maps to that item.
+  - Whether Google *plays* a derived Motion Photo has not been verified against a real account; `tests/gphotos/test_google_smoke.py` is an opt-in check you can run against a throwaway account (see *Live verification* below).
+- ⭐ **Favorites follow, without fighting you.** A star set in Immich is set on the Google item too, reconciled per Google item: when several Immich assets dedup onto the same Google photo, it is starred if *any* of them is starred. An Immich unstar is only mirrored onto items this service uploaded and starred itself — a photo that was already in Google keeps whatever star you gave it there — and never while one of the matching Immich assets is trashed or still syncing. Several accounts on this install that back up into the **same Google account** agree on stars through a shared ledger (keyed by the Google account e-mail): the star stays while any of them wants it. Two *separate* installs sharing one Google account cannot see each other, and Google offers no way to coordinate them, so avoid that setup if you rely on unstarring.
+- 🗂️ **Albums come along.** Immich albums are recreated in Google Photos and kept in step, including splitting anything past Google's 20,000-item album limit. A Live Photo's extra Google items (its original `.MOV` in `original_pair` mode, or a Motion Photo added by reprocessing) join every album its still is in.
 - 🧯 **Deletions are opt-in and hard to trigger by accident.** Off by default, behind a typed confirmation, and guarded by a limit that refuses any pass which would trash more than 10% of your library. That's the switch you'll want if you ever restore Immich from an old backup.
 - 🔑 **Credentials never go in your compose file.** You enter them once in a wizard that checks them against the real APIs before storing anything, and they're redacted everywhere they could otherwise surface — logs, events, error messages.
 
@@ -201,6 +209,22 @@ Without the mount, or when a file isn't readable, it falls back automatically to
 
 Set `IGP_ALLOW_DIRECT_READS=false` to force the API-download path even when the mount is present.
 
+**Only configured, read-only roots are trusted.** `originalPath` comes from the Immich API, so a direct read is only allowed when the fully resolved path (symlinks followed) lies inside a configured library root: by default just `/usr/src/app/upload`. If your library is mounted elsewhere, or you also want External Library folders read directly, list every root in `IGP_DIRECT_READ_ROOTS` (comma- or `:`-separated). Each root must be mounted read-only (`:ro`); a writable mount is skipped unless you set `IGP_DIRECT_READ_ALLOW_WRITABLE=true` (the service still never writes there). `/` and anything containing this service's own data directory are always refused. Any path outside the roots — `..` tricks, a symlink pointing out of the library, the data directory — is downloaded through the Immich API instead. **Upgrade note:** if you mounted your library somewhere other than `/usr/src/app/upload`, set `IGP_DIRECT_READ_ROOTS` or those assets will take the (slower, still correct) API-download path.
+
+Every open of a library file walks down from the configured root one directory at a time without following symlinks, so a directory swapped for a symlink after the allowlist check makes the read fail (and fall back to the API download) instead of reading something outside the library. Uploads stream from that one pinned file descriptor, and the Google media item is only created when the SHA-1 of the bytes actually sent matches the declared hash and the file is still the same, unmodified file. A file rewritten mid-upload therefore leaves **no** Google item behind (the uncommitted upload just expires); the asset is retried and goes up once, with its new content. An item that was created just before a crash is found again by its content hash on the retry instead of being uploaded twice. Uploads whose capture date could not be confirmed (no date known, or the scratch copy/stamp failed) still go up, and are counted as `timestamp_unverified` under `sync_notes` in `/api/status`.
+
+## Live verification (opt-in)
+
+The normal test suite never touches a real Google or Immich account. Three opt-in suites do, and only when you supply credentials:
+
+| Suite | Enable with | You provide | Leaves behind |
+|---|---|---|---|
+| `tests/gphotos/test_google_smoke.py` | `IGP_GOOGLE_SMOKE=1` | `IGP_GOOGLE_AUTH_DATA` (the gpmc `auth_data` string of a **throwaway** Google account), `IGP_GOOGLE_SMOKE_STILL` + `IGP_GOOGLE_SMOKE_VIDEO` (a real Live Photo JPEG + its `.MOV`) | Nothing: the one item it uploads is moved to the Google Photos trash and then deleted permanently from there, in a `finally` so this also happens when an assertion fails. It skips rather than touch an item with the same bytes that already existed. |
+| `tests/immich/test_immich_live.py` | `IGP_IMMICH_LIVE=1` | `IGP_IMMICH_URL`, `IGP_IMMICH_API_KEY` (`asset.read`, `asset.download`), optionally `IGP_IMMICH_LIVE_PHOTO_STILL_ID` | Nothing: read-only requests; downloads go to pytest's temp dir. |
+| `tests/contract/test_immich_openapi.py` | `IGP_CONTRACT_TESTS=1` | network access only | Nothing. |
+
+This project talks to Google through gpmc (the Android app's protocol), not the Google Photos Library API, so it needs `auth_data` rather than an OAuth client ID and refresh token.
+
 ## Environment variables
 
 All optional, all with working defaults, and **none of them ever carry a credential** — those live only in the database, entered through the wizard.
@@ -252,7 +276,7 @@ The asset table *is* the work queue, so there's no second store to drift out of 
 Tested end to end against a real Immich 3.2.2 instance and a real Google Photos account:
 
 - ✅ The `AssetCreate` webhook fires and its payload parses, including the `Buffer`-shaped checksum field.
-- ✅ That checksum is the SHA-1 of the original file — the assumption the entire dedup design rests on.
+- ✅ Upload integrity: the upload hash is the SHA-1 of the actual bytes hashed by the service itself before transfer — not Immich's checksum field, which is the file's SHA-1 only for internal uploads and a `sha1(path)` virtual value for External Library assets (`checksumAlgorithm: sha1-path`). Checking real uploaded bytes against real uploaded bytes.
 - ✅ A hash Google already holds is recognised without uploading anything.
 - ✅ Upload, dedup lookup and trash all work through the real API.
 - ✅ Motion photos: with real Pixel and Samsung samples, Immich extracts the video into a hidden asset, leaves the original JPEG byte-identical, and the eligibility rule uploads the still while skipping the clip.

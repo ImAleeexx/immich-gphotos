@@ -38,6 +38,9 @@ class Services:
     redactor: Any = None  # logging.Redactor; shared with the log handler, grown via add_secret
     scratch: Path | None = None  # where ByteResolver stages downloads; needed to rebuild it
     allow_direct: bool = True  # IGP_ALLOW_DIRECT_READS, needed to rebuild ByteResolver
+    # The validated read-only library roots a direct read may come from
+    # (`accounts.build.direct_read_roots`); None means ByteResolver's default.
+    direct_roots: tuple[Path, ...] | None = None
     loops_handle: Any = None  # sync.loops.LoopsHandle; the live-swap target for the background loop
     # The process-wide shared limiters (Task 6): sync.throttle.TokenBucket
     # (or None, meaning no cap) and a context manager gating concurrent
@@ -60,3 +63,7 @@ class Services:
     # files still open. `None` for a hand-assembled `Services` in tests, which
     # is why `remove` treats it as optional.
     conn: Any = None  # sqlite3.Connection
+    # The process-wide sync.favorite_ledger.SharedFavoriteLedger and this
+    # account's id in it; None for a single hand-built Services in tests.
+    favorite_ledger: Any = None
+    account_id: str | None = None
