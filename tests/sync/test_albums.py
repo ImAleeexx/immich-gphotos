@@ -125,3 +125,44 @@ def test_chain_orders_overflow_albums_numerically_past_depth_nine(rig):
 
     assert [m.immich_album_id for m in chain] == ["alb-1"] + [f"alb-1#{n}" for n in range(2, 12)]
     assert chain[-1].immich_album_id == "alb-1#11"
+
+
+def test_a_motion_photo_added_later_by_reprocess_joins_its_stills_albums(rig):
+    mirror, assets, albums, _, gphotos = rig
+    sync(assets, "a", "key-a")
+    sync(assets, "b", "key-b")
+    mirror.sync_once()
+    gp_album = albums.mapping("alb-1").gp_album_id
+    assert gphotos.albums[gp_album] == ["key-a", "key-b"]
+
+    # Later: derived_motion reprocess adds a Motion Photo item for "a".
+    assets.record_live_photo(
+        "a", "mov-a", mode="derived_motion", status="complete", derived_sha1="d", derived_media_key="key-a-mp"
+    )
+    result = mirror.sync_once()
+    assert result.added == 1
+    assert gphotos.albums[gp_album] == ["key-a", "key-b", "key-a-mp"]
+    assert albums.is_member_added("alb-1", "a#derived")
+    assert mirror.sync_once().added == 0
+
+
+def test_an_original_pair_clip_joins_its_stills_albums_once(rig):
+    mirror, assets, albums, _, gphotos = rig
+    sync(assets, "a", "key-a")
+    assets.record_live_photo(
+        "a", "mov-a", mode="original_pair", status="complete", video_sha1="v", video_media_key="key-mov-a"
+    )
+    mirror.sync_once()
+    gp_album = albums.mapping("alb-1").gp_album_id
+    assert gphotos.albums[gp_album] == ["key-a", "key-mov-a"]
+    sync(assets, "b", "key-b")
+    mirror.sync_once()
+    assert gphotos.albums[gp_album] == ["key-a", "key-mov-a", "key-b"]
+
+
+def test_a_live_photo_whose_motion_is_not_backed_up_adds_only_the_still(rig):
+    mirror, assets, albums, _, gphotos = rig
+    sync(assets, "a", "key-a")
+    assets.record_live_photo("a", "mov-a", mode="original_pair", status="pending")
+    mirror.sync_once()
+    assert gphotos.albums[albums.mapping("alb-1").gp_album_id] == ["key-a"]

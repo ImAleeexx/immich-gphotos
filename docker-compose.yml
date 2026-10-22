@@ -18,6 +18,9 @@ services:
       # of reading the mount below directly (e.g. to test the fallback, or if
       # the mount is present but shouldn't be trusted as the live library):
       # IGP_ALLOW_DIRECT_READS: "false"
+      # Direct reads are only trusted from these read-only roots (default:
+      # /usr/src/app/upload). Add External Library mounts here, comma-separated:
+      # IGP_DIRECT_READ_ROOTS: "/usr/src/app/upload,/mnt/external-library"
     volumes:
       # Holds control.db (the admin password, session and shared settings)
       # plus accounts/<id>/ for each account's own database and credentials.

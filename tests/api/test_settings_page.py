@@ -101,3 +101,13 @@ def test_settings_load_reports_a_failed_fetch_instead_of_a_silently_blank_form(h
     assert "formError" in fn or "form-error" in fn, (
         "a failed load must surface an inline error, consistent with the rest of the branch"
     )
+
+
+def test_settings_offers_exactly_the_supported_live_photo_modes(http):
+    from immich_gphotos.sync.livephoto import LIVE_PHOTO_MODES
+
+    body = http.get("/settings").text
+    for mode in LIVE_PHOTO_MODES:
+        assert f'<option value="{mode}">' in body
+    assert body.count('name="live_photo_mode"') == 1
+    assert "stars you set in Google are never removed" in body

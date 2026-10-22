@@ -18,6 +18,31 @@
       <span class="field__label">Sync albums</span>
       <input type="checkbox" name="albums_enabled" class="switch">
     </label>
+    <label class="field">
+      <span class="field__label">Sync favorites</span>
+      <input type="checkbox" name="favorites_enabled" class="switch">
+    </label>
+    <p class="field__hint">Stars set in Immich are added in Google Photos. An Immich unstar only removes a
+      star this service set on a photo it uploaded itself; stars you set in Google are never removed.</p>
+    <label class="field">
+      <span class="field__label">Apple Live Photos</span>
+      <select name="live_photo_mode" class="input">
+        <option value="still_only_legacy">Still only (motion not backed up)</option>
+        <option value="original_pair">Original still + original video (two items)</option>
+        <option value="derived_motion">Convert to Google Motion Photo</option>
+      </select>
+    </label>
+    <p class="field__hint"><strong>Still only</strong> uploads the photo unchanged and does not back up
+      the motion clip (the previous behaviour). <strong>Original still + video</strong> backs up both
+      untouched originals; Google shows them as two separate items, not a linked Live Photo, and the clip
+      uses extra storage. <strong>Convert</strong> builds a Motion Photo from the two originals in a scratch
+      copy and uploads that instead &mdash; Immich's files are never modified. Changing this only affects
+      photos synced from now on; already-synced photos are only reprocessed if you ask for it below.</p>
+    <div class="field">
+      <span class="field__label">Reprocess synced Live Photos</span>
+      <button type="button" id="live-reprocess" class="btn">Back up missing motion</button>
+      <p class="field__hint" id="live-plan"></p>
+    </div>
     <div class="field">
       <span class="field__label">Propagate deletions</span>
       <label class="switch-row">
@@ -79,6 +104,49 @@ document.addEventListener("DOMContentLoaded", () => {
     deletionsPill.classList.toggle("pill--ok", !on);
   }
 
+  // Must match immich_gphotos.api.routes.LIVE_PHOTO_REPROCESS_PHRASE.
+  const LIVE_PHOTO_REPROCESS_PHRASE = "REPROCESS LIVE PHOTOS";
+  const livePlan = document.getElementById("live-plan");
+  const liveReprocess = document.getElementById("live-reprocess");
+
+  async function loadLivePlan() {
+    const response = await fetch("/api/live-photos");
+    if (!response.ok) return;
+    const plan = await response.json();
+    const incomplete = plan.groups
+      .filter((g) => g.status !== "complete")
+      .reduce((n, g) => n + g.count, 0);
+    livePlan.textContent =
+      `${incomplete + plan.untracked_synced_stills} synced Live Photo(s) without backed-up motion. ` +
+      "Reprocessing adds the missing motion item under the saved mode; it never deletes or replaces " +
+      "the photo already in Google.";
+    liveReprocess.disabled = plan.mode === "still_only_legacy";
+  }
+
+  liveReprocess.addEventListener("click", async () => {
+    const confirmed = await igp.confirmPhrase({
+      title: "Back up missing Live Photo motion",
+      body:
+        "Uses the saved Live Photo mode to upload one extra item per already-synced Live Photo. " +
+        "The photos already in Google Photos are not deleted or replaced.",
+      phrase: LIVE_PHOTO_REPROCESS_PHRASE,
+    });
+    if (!confirmed) return;
+    const typed = LIVE_PHOTO_REPROCESS_PHRASE;
+    const response = await fetch("/api/live-photos/reprocess", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: typed }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      igp.toast((data && data.detail) || "Reprocess failed.", { tone: "danger" });
+      return;
+    }
+    igp.toast(`${data.queued} Live Photo(s) queued.`);
+    await loadLivePlan();
+  });
+
   async function load() {
     try {
       const response = await fetch("/api/settings");
@@ -87,6 +155,9 @@ document.addEventListener("DOMContentLoaded", () => {
       form.quality.value = s.quality;
       form.albums_enabled.checked = s.albums_enabled;
       form.deletions_enabled.checked = s.deletions_enabled;
+      form.favorites_enabled.checked = s.favorites_enabled;
+      form.live_photo_mode.value = s.live_photo_mode;
+      await loadLivePlan();
       deletionsEnabledAtLoad = s.deletions_enabled;
       confirmedPhrase = null;
       form.worker_threads.value = s.worker_threads;
@@ -135,6 +206,8 @@ document.addEventListener("DOMContentLoaded", () => {
         quality: form.quality.value,
         albums_enabled: form.albums_enabled.checked,
         deletions_enabled: form.deletions_enabled.checked,
+        favorites_enabled: form.favorites_enabled.checked,
+        live_photo_mode: form.live_photo_mode.value,
         worker_threads: Number(form.worker_threads.value),
         bandwidth_bytes_per_second: form.bandwidth_bytes_per_second.value
           ? Number(form.bandwidth_bytes_per_second.value)

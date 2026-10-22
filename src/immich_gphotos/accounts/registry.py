@@ -32,6 +32,7 @@ from immich_gphotos.logging import Redactor, configure_logging
 from immich_gphotos.services import Services
 from immich_gphotos.storage_keys import LEGACY_WEBHOOK_ACCOUNT_KEY, SETTINGS_KEY
 from immich_gphotos.store.kv import SettingRepo
+from immich_gphotos.sync.favorite_ledger import SharedFavoriteLedger
 from immich_gphotos.sync.loops import LoopsHandle
 from immich_gphotos.sync.throttle import TokenBucket
 
@@ -111,6 +112,8 @@ class AccountRegistry:
         self._conn = connect_control(self._data_dir / CONTROL_DB_NAME)
         self.accounts_repo = AccountRepo(self._conn)
         self.settings = SettingRepo(self._conn)
+        # Star agreement between accounts backing up into one Google account.
+        self.favorite_ledger = SharedFavoriteLedger(self._conn)
         self._accounts: dict[str, Account] = {}
         # The process-wide shared limiters (Task 6) -- one TokenBucket and
         # one upload-slot Semaphore for every account's Worker, built once
@@ -180,6 +183,8 @@ class AccountRegistry:
             global_settings=self.settings.get(SETTINGS_KEY),
             bandwidth=self._bandwidth,
             gate=self._gate,
+            favorite_ledger=self.favorite_ledger,
+            account_id=record.id,
         )
 
     def _load(self) -> None:
@@ -494,6 +499,7 @@ class AccountRegistry:
             # teardown and building its graph against limiters this method is
             # about to walk past.
             account = self._accounts.pop(account_id, None)
+            self.favorite_ledger.forget_account(account_id)
             if account is None:
                 return None
 

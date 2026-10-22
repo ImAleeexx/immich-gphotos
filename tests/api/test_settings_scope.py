@@ -24,6 +24,15 @@ def test_an_account_key_is_stored_in_the_account_database(http, rig_registry):
     assert rig_registry.settings.get(SETTINGS_KEY) in (None, {})
 
 
+def test_favorites_toggle_is_account_scoped_and_live_applied(http, rig_registry):
+    response = http.put("/api/settings", json={"favorites_enabled": False})
+    assert response.status_code == 200
+    assert response.json()["favorites_enabled"] is False
+    account = rig_registry.default()
+    assert account.services.settings_repo.get(SETTINGS_KEY) == {"favorites_enabled": False}
+    assert account.services.settings.favorites_enabled is False
+
+
 def test_a_global_setting_survives_a_restart_and_wins_over_an_account_copy():
     """A pre-split database (or a hand-edited account row) may still carry a
     copy of a global key -- the migration deliberately leaves it there (see

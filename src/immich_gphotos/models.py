@@ -84,6 +84,15 @@ class Asset:
     # their own. Optional: a webhook payload or an Immich version that omits
     # the field simply leaves the upload undated, as before.
     taken_at: str | None = None
+    # Immich's `isFavorite`: whether the user starred the asset. Carried so
+    # the worker can push it to Google immediately after upload/dedup and the
+    # favorite sweeper can reconcile later drifts -- see `sync.favorites`.
+    is_favorite: bool = False
+    # Immich's `livePhotoVideoId`: for an Apple Live Photo still, the id of
+    # the companion `.MOV` asset (which Immich stores hidden). Carried so the
+    # still and its motion can be muxed into one Google Motion Photo before
+    # upload -- see `sync.livephoto`. None for everything else.
+    live_photo_video_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -100,3 +109,13 @@ class StoredAsset:
     error_class: ErrorClass | None
     last_error: str | None
     ineligible_reason: str | None
+    # The last favorite value pushed to Google (None = never pushed).
+    # Compared against `asset.is_favorite` by the favorite sweeper to find
+    # drift without re-uploading bytes -- see `sync.favorites`.
+    favorite_synced: bool | None = None
+    # The base64 SHA-1 of the bytes described to Google when this row synced
+    # (None for rows synced without resolving bytes -- dedup hits -- or by
+    # older versions). Every Google-side consumer keys on it; the delete
+    # path falls back to `asset.checksum`, which is exact for the rows
+    # synced before hashing existed. See `sync.deletions`.
+    upload_sha1: str | None = None

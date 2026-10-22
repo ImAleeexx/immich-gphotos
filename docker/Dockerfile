@@ -7,6 +7,10 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
+# ExifTool (for HEIC/AVIF Live Photo XMP; JPEG muxing needs nothing).
+# Installed before pip so layer caching still works when only Python deps change.
+RUN apt-get update && apt-get install -y --no-install-recommends libimage-exiftool-perl \
+    && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir .
 
 RUN useradd --create-home --uid 1000 app && mkdir -p /data && chown app /data
